@@ -1,0 +1,38 @@
+name: Sanitisation lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for sanitisation pattern matches
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .github/sanitisation-patterns.txt ]; then
+            echo "sanitisation-patterns.txt missing"
+            exit 1
+          fi
+          hits=0
+          while IFS= read -r pattern; do
+            # Skip blank lines and comments
+            [[ -z "$pattern" || "$pattern" =~ ^# ]] && continue
+            echo "Checking pattern: $pattern"
+            # Exclude the patterns file itself and the lint workflow
+            if git grep -l -E "$pattern" -- ':!.github/sanitisation-patterns.txt' ':!.github/workflows/sanitisation-lint.yml' > /dev/null 2>&1; then
+              echo "::error::Pattern matched in tracked files: $pattern"
+              git grep -n -E "$pattern" -- ':!.github/sanitisation-patterns.txt' ':!.github/workflows/sanitisation-lint.yml' || true
+              hits=$((hits + 1))
+            fi
+          done < .github/sanitisation-patterns.txt
+          if [ "$hits" -gt 0 ]; then
+            echo "::error::Sanitisation lint failed: $hits pattern(s) matched"
+            exit 1
+          fi
+          echo "Sanitisation lint passed."

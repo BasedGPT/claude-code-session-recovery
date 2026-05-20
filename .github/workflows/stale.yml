@@ -1,0 +1,30 @@
+name: Close stale issues and PRs
+
+on:
+  schedule:
+    - cron: '0 12 * * *'  # daily at 12:00 UTC
+  workflow_dispatch:
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/stale@v9
+        with:
+          days-before-stale: 45
+          days-before-close: 15
+          stale-issue-message: |
+            This issue hasn't seen activity in 45 days. It will close in 15 days unless someone comments or updates it.
+            If the symptom still applies, paste a fresh `python tools/diagnose.py --json` output to keep it open.
+          close-issue-message: |
+            Closing as inactive. Open a fresh issue with current `diagnose.py` output if the symptom returns.
+          stale-pr-message: |
+            This PR hasn't seen activity in 45 days. It will close in 15 days unless updated.
+          close-pr-message: |
+            Closing as inactive. Reopen or open a new PR when you're ready to continue.
+          exempt-issue-labels: 'bug,security,help-wanted,domain:session,domain:worktree'
+          exempt-pr-labels: 'security'
+          operations-per-run: 60

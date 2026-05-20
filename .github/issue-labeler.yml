@@ -1,0 +1,25 @@
+"domain:session":
+  - '(?i)\bcliSessionId\b'
+  - '(?i)\bblank pane\b'
+  - '(?i)\bblank session\b'
+  - '(?i)\bsession metadata\b'
+  - '(?i)\blocal_.*\.json\b'
+
+"domain:worktree":
+  - '(?i)\bworktree\b'
+  - '(?i)\bshrink\b'
+  - '(?i)\bmaterialise\b|\bmaterialize\b'
+  - '(?i)\b\.shrink-when-safe\b'
+
+"bug-class:junction-realpath":
+  - '(?i)\bjunction\b'
+  - '(?i)\brealpath\b'
+  - '(?i)\bslug\b'
+
+"topic:backup":
+  - '(?i)\bbackup\b'
+  - '(?i)\brestore\b'
+  - '(?i)\brecovery\b'
+
+"symptom-not-covered":
+  - '(?i)Symptom not covered:'

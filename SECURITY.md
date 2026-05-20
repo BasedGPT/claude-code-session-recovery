@@ -2,11 +2,12 @@
 
 ## Threat model
 
-Scripts in this repo read from two locations on your system:
+Scripts in this repo read from four locations on your system:
 
 - `%APPDATA%\Claude\claude-code-sessions\<account-uuid>\<org-uuid>\local_*.json` — Desktop session metadata files
 - `%USERPROFILE%\.claude\projects\<slug>\*.jsonl` — Claude Code conversation transcripts
 - `%LOCALAPPDATA%\AnthropicClaude\` — directory listing only, for version detection
+- `%APPDATA%\Claude\Local Storage\leveldb\*.ldb` and `*.log` — Desktop grouping state (read-only; `list_groupings.py` only)
 
 Mutating scripts write to:
 

@@ -264,3 +264,65 @@ jsonl_count, schema_version
 ```
 
 Version fields (`desktop_version`, `cli_version`) and process state (`desktop_running`) are excluded. A mutator gets a mismatch if the broken state changes between diagnosis and repair, but not if the CLI version is updated in the meantime. Fixture-mode runs skip live system detection entirely, so golden outputs are identical across environments.
+
+---
+
+## Session grouping layer
+
+Claude Desktop lets users assign sessions to named groups ("OCD", "Work", "Recipes", etc.) and reorder them within each group. This state is stored separately from the two-layer session model above — it lives in Chromium Local Storage, not in the metadata JSON files.
+
+### Storage location
+
+```
+%APPDATA%\Claude\Local Storage\leveldb\*.ldb  (SSTables)
+%APPDATA%\Claude\Local Storage\leveldb\*.log  (WAL, uncompacted writes)
+```
+
+The filename (`004022.ldb`, etc.) changes after LevelDB compaction. `list_groupings.py` scans all `.ldb` and `.log` files, picking the entry with the highest LevelDB sequence number so recent writes not yet compacted into an SSTable are included.
+
+**Origin key:** `_https://claude.ai` (ASCII, not UTF-16LE)
+**Local Storage key:** `dframe-store`
+
+### Schema
+
+All grouping state lives in `dframe-store` → JSON → `state`:
+
+```
+state.customGroups            list[{id: "cg-<uuid>", name: str}]
+state.customGroupAssignments  {session_key: group_id}
+state.customGroupOrder        {group_id: [session_key, ...]}
+```
+
+Session keys match the `cliSessionId` format used by session metadata:
+
+| Key format | Meaning |
+|---|---|
+| `code:local_<uuid>` | Worktree / local Claude Code session |
+| `code:session_<id>` | Cloud session (claude.ai) |
+
+Group IDs use the prefix `cg-` (not `g-`).
+
+A second key, `LSS-persisted.dframe-local-slice`, holds a copy of `customGroupAssignments` only — no group names. `dframe-store` is authoritative.
+
+### LevelDB format notes
+
+Two Chromium-specific differences from upstream LevelDB:
+
+1. **Magic bytes.** Footer bytes 40–47 are `57fb808b247547db`, not the upstream `57fb808b24e37478`. A parser using the upstream magic silently returns no results on Chromium files.
+2. **Snappy-compressed index block.** The 5-byte block trailer's type byte is `0x01` (Snappy) for the index block. A parser that reads the index block as raw bytes gets garbage — misinterpreted restart count, buffer overruns.
+
+`list_groupings.py` implements both fixes in pure Python with no pip dependencies.
+
+### Read-only constraint
+
+The grouping store is owned by Claude Desktop. Writing to it while Desktop holds the LevelDB open risks corruption. `list_groupings.py` is read-only by design. If grouping assignments are lost (e.g. after the known wipe bug on Desktop update), there is no automated recovery path — `list_groupings.py` can confirm what is currently assigned but cannot restore a prior state.
+
+### Fixture path convention
+
+`list_groupings.py --state <root>` expects the LevelDB directory at:
+
+```
+<root>/appdata/Claude/Local Storage/leveldb/
+```
+
+This matches the fixture layout used by all other tools in this repo.

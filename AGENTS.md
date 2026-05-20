@@ -24,6 +24,12 @@ python tools/sessions/<mutator>.py --diagnosis-id <hex> --apply  # apply
 pwsh tools/worktrees/worktree_inspector.ps1
 ```
 
+**Inspect session groupings (read-only):**
+```
+python tools/groupings/list_groupings.py
+python tools/groupings/list_groupings.py --quiet
+```
+
 ---
 
 ## 2. Architecture

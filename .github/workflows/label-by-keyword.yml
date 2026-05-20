@@ -1,0 +1,19 @@
+name: Label issues by keyword
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: github/issue-labeler@v3
+        with:
+          configuration-path: .github/issue-labeler.yml
+          enable-versioned-regex: 0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          include-title: 1
+          include-body: 1

@@ -4,8 +4,8 @@ Diagnosis ID : 4ddac9f8
 Metadata     : 10 files  (8 with cliSessionId,  2 missing)
 JSONL files  : 10
 
-PROBLEM FOUND: Claude Desktop history shows old sessions, but clicking them shows a blank pane
-  Details: docs/session-recovery.md#blank-pane
+PROBLEM FOUND: Sessions appear in the session list but open with no conversation history
+  Details: docs/session-recovery.md#blank-pane-missing-cli
   Safety : Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.
 
   To repair -- dry-run first, review output, then add --apply:

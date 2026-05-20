@@ -4,8 +4,8 @@ Diagnosis ID : c5f49353
 Metadata     : 5 files  (5 with cliSessionId,  0 missing)
 JSONL files  : 5
 
-PROBLEM FOUND: Sessions started from a Windows junction path show separate history from sessions at the real path
-  Details: docs/session-recovery.md#junction-realpath
+PROBLEM FOUND: One project shows two sets of sessions in the session list
+  Details: docs/session-recovery.md#junction-realpath-slug-mismatch
   Safety : Quit Claude Desktop fully before any mutation. Do not remove the junction while any session using it is active.
 
   To repair -- dry-run first, review output, then add --apply:

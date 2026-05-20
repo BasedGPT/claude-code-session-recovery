@@ -2,7 +2,7 @@
 
 > Tested against Claude Code CLI v2.1.121 on Windows 11 — 2026-05-19. Claude Desktop version detected at runtime by `diagnose.py`.
 
-Your Claude Desktop session list is blank, or sessions are opening with no conversation history. This repo fixes that.
+Something broke somewhere with your sessions in Claude Desktop. This repo fixes that.
 
 ## Where to start
 

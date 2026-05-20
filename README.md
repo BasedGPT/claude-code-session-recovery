@@ -12,14 +12,14 @@ Something broke somewhere with your sessions in Claude Desktop. Because I'm a bi
 If you want Claude Code to diagnose and repair your sessions for you, paste this:
 
 ```
-My Claude Code sessions are broken on Windows.
-Please help me by:
-1. Cloning https://github.com/BasedGPT/claude-code-session-recovery to a temp folder
-2. Running `python tools/diagnose.py`
-3. Reading the output and running the repair command it recommends
-4. Telling me what was found and what was fixed
+My Claude Code sessions are broken on Windows. Please help me fix them using https://github.com/BasedGPT/claude-code-session-recovery
 
-The diagnostic is read-only. Repair tools only modify session metadata — they do not touch conversation history.
+1. Clone the repo to a temp folder
+2. Read AGENTS.md — it's written for AI assistants and explains how to use this repo safely
+3. Read docs/session-recovery.md to understand the symptoms and repair tools
+4. Run `python tools/diagnose.py` — it auto-detects all file paths from the environment, no configuration needed
+5. Read the output and run the repair command it recommends (dry-run first, then --apply)
+6. Tell me what was found and what was fixed
 ```
 
 ## Quickstart

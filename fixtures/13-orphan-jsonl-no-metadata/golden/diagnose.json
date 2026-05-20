@@ -1,0 +1,44 @@
+{
+  "diagnosis_id": "02fff490",
+  "tested_against": {
+    "claude_desktop": null,
+    "claude_code_cli": null,
+    "windows": "11"
+  },
+  "schema_probe": "recognised",
+  "desktop_running": false,
+  "matched_problems": [
+    {
+      "id": "orphan-jsonl-no-metadata",
+      "domain": "session",
+      "mutator": "tools/sessions/synth_session_metadata.py",
+      "next_command": "python tools/sessions/synth_session_metadata.py --diagnosis-id 02fff490",
+      "safety_preconditions": [
+        "Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime."
+      ]
+    }
+  ],
+  "audit_only_problems": [],
+  "schema_mismatch": false,
+  "snapshot": {
+    "total_metadata_count": 3,
+    "metadata_with_cli_count": 3,
+    "metadata_missing_cli_count": 0,
+    "metadata_dangling_cli_count": 0,
+    "metadata_duplicate_cli_count": 0,
+    "cwd_junction_mismatch_count": 0,
+    "jsonl_orphan_count": 2,
+    "cwd_slug_mismatch_count": 0,
+    "cwd_prefix_types": {
+      "junction": 0,
+      "canonical": 0,
+      "bare_root": 0,
+      "other": 3
+    },
+    "jsonl_count": 5,
+    "schema_version": "recognised",
+    "desktop_version": null,
+    "cli_version": null,
+    "desktop_running": false
+  }
+}

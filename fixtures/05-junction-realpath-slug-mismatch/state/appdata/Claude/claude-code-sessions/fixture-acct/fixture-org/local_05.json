@@ -1,0 +1,9 @@
+{
+  "sessionId": "f1xe0505-0505-0005-aaaa-000000000000",
+  "cliSessionId": "f1xe0505-0505-0005-aaaa-000000000000",
+  "cwd": "C:\\Users\\fixture-user\\Sync\\old-junction-name",
+  "originCwd": "C:\\Users\\fixture-user\\Sync\\old-junction-name",
+  "createdAt": 1736467500000,
+  "model": "claude-opus-4-5",
+  "title": "Fixture 05 session 5 (junction mismatch)"
+}

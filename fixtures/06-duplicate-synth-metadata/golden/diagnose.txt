@@ -1,0 +1,14 @@
+DIAGNOSE -- Claude Code Desktop Session Recovery Tools
+------------------------------------------------------------
+Diagnosis ID : 617f37b7
+Metadata     : 5 files  (5 with cliSessionId,  0 missing)
+JSONL files  : 4
+
+PROBLEM FOUND: Two entries in Claude Desktop history point to the same conversation
+  Details: docs/session-recovery.md#duplicate-synth-metadata
+  Safety : Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.
+
+  To repair -- dry-run first, review output, then add --apply:
+    python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id 617f37b7
+    python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id 617f37b7 --apply
+

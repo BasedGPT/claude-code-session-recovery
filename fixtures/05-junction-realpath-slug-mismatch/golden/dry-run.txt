@@ -1,0 +1,13 @@
+Sessions with cwd slug mismatch: 1
+Mode: dry-run
+Diagnosis ID: c5f49353
+
+  REPOINT f1xe0505-0505-0005-aaaa-000000000000
+          file=local_05.json
+          slug_dir=C--Users-fixture-user-Sync-new-canonical-name
+          cwd: 'C:\\Users\\fixture-user\\Sync\\old-junction-name' -> 'C:\\Users\\fixture-user\\Sync\\new-canonical-name'
+          originCwd: 'C:\\Users\\fixture-user\\Sync\\old-junction-name' -> 'C:\\Users\\fixture-user\\Sync\\new-canonical-name'
+
+Updated: 1  Skipped: 0  Failed: 0
+
+Re-run with --apply to write changes to AppData.

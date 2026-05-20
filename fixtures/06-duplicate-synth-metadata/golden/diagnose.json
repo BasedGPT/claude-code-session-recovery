@@ -1,0 +1,44 @@
+{
+  "diagnosis_id": "617f37b7",
+  "tested_against": {
+    "claude_desktop": null,
+    "claude_code_cli": null,
+    "windows": "11"
+  },
+  "schema_probe": "recognised",
+  "desktop_running": false,
+  "matched_problems": [
+    {
+      "id": "duplicate-synth-metadata",
+      "domain": "session",
+      "mutator": "tools/sessions/cleanup_synth_duplicates.py",
+      "next_command": "python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id 617f37b7",
+      "safety_preconditions": [
+        "Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime."
+      ]
+    }
+  ],
+  "audit_only_problems": [],
+  "schema_mismatch": false,
+  "snapshot": {
+    "total_metadata_count": 5,
+    "metadata_with_cli_count": 5,
+    "metadata_missing_cli_count": 0,
+    "metadata_dangling_cli_count": 0,
+    "metadata_duplicate_cli_count": 1,
+    "cwd_junction_mismatch_count": 0,
+    "jsonl_orphan_count": 0,
+    "cwd_slug_mismatch_count": 0,
+    "cwd_prefix_types": {
+      "junction": 0,
+      "canonical": 0,
+      "bare_root": 0,
+      "other": 5
+    },
+    "jsonl_count": 4,
+    "schema_version": "recognised",
+    "desktop_version": null,
+    "cli_version": null,
+    "desktop_running": false
+  }
+}

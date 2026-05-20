@@ -1,0 +1,9 @@
+{
+  "sessionId": "f1xe1212-1212-0010-aaaa-000000000000",
+  "cwd": "C:\\Users\\fixture-user\\my-project",
+  "originCwd": "C:\\Users\\fixture-user\\my-project",
+  "createdAt": 1737244800000,
+  "updatedAt": 1737244860000,
+  "model": "claude-opus-4-5",
+  "title": "Fixture 12 session 10 (no CLI)"
+}

@@ -1,0 +1,13 @@
+DIAGNOSE -- Claude Code Desktop Session Recovery Tools
+------------------------------------------------------------
+Diagnosis ID : f7ce459b
+Metadata     : 3 files  (3 with cliSessionId,  0 missing)
+JSONL files  : 0
+
+PROBLEM FOUND: Claude Desktop shows a session in history but opening it shows no conversation content
+  Details: docs/session-recovery.md#missing-jsonl
+  Safety : This may be unrecoverable if no backup exists. Diagnose is read-only.
+
+  No automatic repair for this state. See:
+    docs/session-recovery.md#missing-jsonl
+

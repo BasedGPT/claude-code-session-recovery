@@ -1,0 +1,7 @@
+DIAGNOSE -- Claude Code Desktop Session Recovery Tools
+------------------------------------------------------------
+Diagnosis ID : cb61b940
+Metadata     : 10 files  (10 with cliSessionId,  0 missing)
+JSONL files  : 10
+
+State looks healthy. No known broken patterns matched.

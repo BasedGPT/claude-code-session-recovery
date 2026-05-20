@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+tools/sessions/repair-backup/
+tools/sessions/cleanup-backup/
+tools/sessions/cwd-rewrite-backup/
+tools/worktrees/shrink-manifests/
+tools/_*.py
+tools/sessions/synth-out/

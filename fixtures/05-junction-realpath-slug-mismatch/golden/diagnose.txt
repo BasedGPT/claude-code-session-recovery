@@ -1,0 +1,14 @@
+DIAGNOSE -- Claude Code Desktop Session Recovery Tools
+------------------------------------------------------------
+Diagnosis ID : c5f49353
+Metadata     : 5 files  (5 with cliSessionId,  0 missing)
+JSONL files  : 5
+
+PROBLEM FOUND: Sessions started from a Windows junction path show separate history from sessions at the real path
+  Details: docs/session-recovery.md#junction-realpath
+  Safety : Quit Claude Desktop fully before any mutation. Do not remove the junction while any session using it is active.
+
+  To repair -- dry-run first, review output, then add --apply:
+    python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id c5f49353
+    python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id c5f49353 --apply
+

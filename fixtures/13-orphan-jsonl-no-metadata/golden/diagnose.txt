@@ -4,8 +4,8 @@ Diagnosis ID : 02fff490
 Metadata     : 3 files  (3 with cliSessionId,  0 missing)
 JSONL files  : 5
 
-PROBLEM FOUND: Claude Desktop does not show some sessions in history at all, even though conversation transcripts exist on disk
-  Details: docs/session-recovery.md#orphan-jsonl
+PROBLEM FOUND: Sessions are absent from the session list even though their transcript files exist on disk
+  Details: docs/session-recovery.md#orphan-jsonl-no-metadata
   Safety : Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.
 
   To repair -- dry-run first, review output, then add --apply:

@@ -4,7 +4,7 @@ Diagnosis ID : 617f37b7
 Metadata     : 5 files  (5 with cliSessionId,  0 missing)
 JSONL files  : 4
 
-PROBLEM FOUND: Two entries in Claude Desktop history point to the same conversation
+PROBLEM FOUND: Two sessions in the session list open to the same conversation history
   Details: docs/session-recovery.md#duplicate-synth-metadata
   Safety : Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.
 

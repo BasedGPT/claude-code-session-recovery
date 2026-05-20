@@ -4,7 +4,7 @@ Diagnosis ID : 042be50c
 Metadata     : 5 files  (5 with cliSessionId,  0 missing)
 JSONL files  : 5
 
-PROBLEM FOUND: Sessions show history but are listed under a bare drive root rather than a project folder
+PROBLEM FOUND: Sessions started from a bare drive root rather than a project folder
   Details: docs/session-recovery.md#old-root-cwd-reference
   Safety : These sessions are typically read-only recoverable. Diagnose is read-only and safe to run anytime.
 

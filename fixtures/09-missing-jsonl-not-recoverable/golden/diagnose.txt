@@ -4,10 +4,10 @@ Diagnosis ID : b0c347cc
 Metadata     : 5 files  (5 with cliSessionId,  0 missing)
 JSONL files  : 0
 
-PROBLEM FOUND: Claude Desktop shows a session in history but opening it shows no conversation content
-  Details: docs/session-recovery.md#missing-jsonl
+PROBLEM FOUND: Session is in the session list but its conversation history is missing from disk
+  Details: docs/session-recovery.md#cli-points-missing-jsonl
   Safety : This may be unrecoverable if no backup exists. Diagnose is read-only.
 
   No automatic repair for this state. See:
-    docs/session-recovery.md#missing-jsonl
+    docs/session-recovery.md#cli-points-missing-jsonl
 

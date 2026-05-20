@@ -10,7 +10,7 @@ Run `python tools/diagnose.py` first — it reads this table, probes your state,
 
 ### blank-pane-missing-cli
 
-**Symptom:** Claude Desktop history shows old sessions, but clicking them shows a blank pane.
+**Symptom:** Sessions appear in the session list but open with no conversation history.
 
 **Root cause:** `cliSessionId` field missing from session metadata — Desktop can list the session but cannot find the transcript to render.
 
@@ -18,13 +18,13 @@ Run `python tools/diagnose.py` first — it reads this table, probes your state,
 
 **Safety:** Quit Claude Desktop fully before any mutation. `diagnose.py` is read-only and safe to run anytime.
 
-**Details:** [docs/session-recovery.md#blank-pane](docs/session-recovery.md#blank-pane)
+**Details:** [docs/session-recovery.md#blank-pane-missing-cli](docs/session-recovery.md#blank-pane-missing-cli)
 
 ---
 
 ### cli-points-missing-jsonl
 
-**Symptom:** Claude Desktop shows a session in history but opening it shows no conversation content.
+**Symptom:** Session is in the session list but its conversation history is missing from disk.
 
 **Root cause:** Metadata file has a valid `cliSessionId` but the JSONL transcript it points at no longer exists on disk.
 
@@ -32,15 +32,15 @@ Run `python tools/diagnose.py` first — it reads this table, probes your state,
 
 **Safety:** This may be unrecoverable if no backup exists. `diagnose.py` is read-only.
 
-**Details:** [docs/session-recovery.md#missing-jsonl](docs/session-recovery.md#missing-jsonl)
+**Details:** [docs/session-recovery.md#cli-points-missing-jsonl](docs/session-recovery.md#cli-points-missing-jsonl)
 
 ---
 
 ### duplicate-synth-metadata
 
-**Symptom:** Two entries in Claude Desktop history point to the same conversation.
+**Symptom:** Two sessions in the session list open to the same conversation history.
 
-**Root cause:** An earlier recovery attempt created a synthetic metadata file for a session that already had a metadata file — leaving two Desktop history entries backed by the same JSONL transcript.
+**Root cause:** An earlier recovery attempt created a synthetic metadata file for a session that already had a metadata file — leaving two sessions in the session list backed by the same transcript file.
 
 **Fix:** `python tools/diagnose.py` will identify the duplicate metadata files and print the cleanup command.
 
@@ -52,7 +52,7 @@ Run `python tools/diagnose.py` first — it reads this table, probes your state,
 
 ### old-root-cwd-reference
 
-**Symptom:** Sessions show history but are listed under a bare drive root rather than a project folder.
+**Symptom:** Sessions started from a bare drive root rather than a project folder.
 
 **Root cause:** The session was started from a project root path before a worktree was set up. Claude Desktop recorded the bare root (`C:\Users\name`) instead of a project-specific path. These sessions are accessible but will not benefit from worktree-aware routing.
 
@@ -66,7 +66,7 @@ Run `python tools/diagnose.py` first — it reads this table, probes your state,
 
 ### junction-realpath-slug-mismatch
 
-**Symptom:** Sessions started from a Windows junction path show separate history from sessions at the real path, or some sessions appear missing.
+**Symptom:** One project shows two sets of sessions in the session list.
 
 **Root cause:** Claude Desktop derives the project slug from the literal path string at session start. Sessions via a junction (`C:\Old\Path`) get a different slug than sessions via the real path (`C:\New\Path`), even if they resolve to the same folder.
 
@@ -74,21 +74,21 @@ Run `python tools/diagnose.py` first — it reads this table, probes your state,
 
 **Safety:** Quit Claude Desktop fully before any mutation. Do not remove the junction while any session using it is active.
 
-**Details:** [docs/session-recovery.md#junction-realpath](docs/session-recovery.md#junction-realpath)
+**Details:** [docs/session-recovery.md#junction-realpath-slug-mismatch](docs/session-recovery.md#junction-realpath-slug-mismatch)
 
 ---
 
 ### orphan-jsonl-no-metadata
 
-**Symptom:** Conversation transcripts exist on disk but some sessions never appear in Claude Desktop history at all.
+**Symptom:** Sessions are absent from the session list even though their transcript files exist on disk.
 
-**Root cause:** The JSONL transcript file exists under `~/.claude/projects/<slug>/` but no metadata file in AppData references it via `cliSessionId`. Without a metadata file, Desktop has no entry to display in its history panel.
+**Root cause:** The JSONL transcript file exists under `~/.claude/projects/<slug>/` but no metadata file in AppData references it via `cliSessionId`. Without a metadata file, Desktop has no entry to display in the session list.
 
 **Fix:** `python tools/diagnose.py` will count the orphaned transcripts and print the synthesis command. Review the synthesised metadata in `./synth-out/` before applying.
 
 **Safety:** Quit Claude Desktop fully before any mutation. `diagnose.py` is read-only and safe to run anytime.
 
-**Details:** [docs/session-recovery.md#orphan-jsonl](docs/session-recovery.md#orphan-jsonl)
+**Details:** [docs/session-recovery.md#orphan-jsonl-no-metadata](docs/session-recovery.md#orphan-jsonl-no-metadata)
 
 ---
 

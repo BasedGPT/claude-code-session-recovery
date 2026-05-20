@@ -19,16 +19,23 @@ You must trust this repo's code before running it. The source is short and reada
 
 ## Provenance
 
-Commits are GPG-signed. Releases are tagged (`v1.0.0`, `v1.0.1`, …). Each release tag includes SHA256 hashes of all tool files in the release notes.
+Commits are GPG-signed. The signing key is published in the GitHub profile for [@BasedGPT](https://github.com/BasedGPT).
 
-Verify before running:
+**Until a tagged release exists,** pin to a specific commit SHA and verify the working tree matches:
+
+```
+git -C claude-code-session-recovery rev-parse HEAD
+git -C claude-code-session-recovery diff --stat   # expect: empty
+```
+
+Once releases are tagged (`v1.0.0`, `v1.0.1`, …), each release tag will carry SHA256 hashes of all tool files in the release notes. At that point, verify before running:
 
 ```
 certutil -hashfile tools/diagnose.py SHA256
 certutil -hashfile tools/sessions/repair_session_metadata.py SHA256
 ```
 
-Compare against the hashes published in the release notes for the version you are using. The signing key is published in the GitHub profile for [@BasedGPT](https://github.com/BasedGPT).
+Compare against the hashes published in the release notes for the version you are using.
 
 ## Safety contract
 

@@ -16,12 +16,12 @@ CLI transcript (the actual conversation):
   %USERPROFILE%\.claude\projects\<slug>\<cli-session-id>.jsonl
 ```
 
-The `cliSessionId` field in the metadata file is the link. When you click a session in Desktop's history picker:
+The `cliSessionId` field in the metadata file is the link. When you click a session in Desktop's session list:
 
 1. Desktop reads the metadata file — title, model, MCP config, etc.
 2. Desktop reads `cliSessionId`, finds the matching JSONL under the slug directory, and renders the conversation.
 
-If `cliSessionId` is missing, null, or points at a JSONL that no longer exists, Desktop shows the session in the picker but the pane is blank or shows a loading spinner indefinitely.
+If `cliSessionId` is missing or null, Desktop renders the session in the session list from the metadata but has no transcript handle to load — the chat opens with the "No messages yet" placeholder (verified visual). If `cliSessionId` points at a JSONL that no longer exists on disk, Desktop surfaces this with the explicit "Session not found on disk" error and offers Archive / Delete actions on the metadata.
 
 ---
 
@@ -110,7 +110,7 @@ Two distinct breaks result from renaming a project folder:
 
 If a metadata file has a valid `cliSessionId` but the JSONL it points at is absent from disk, no repair to the metadata will help — there is nothing to link to.
 
-This is a distinct failure mode from a missing `cliSessionId`. Desktop shows the session in the picker because the metadata file exists. Clicking it fails because the JSONL is gone.
+This is a distinct failure mode from a missing `cliSessionId`. Desktop shows the session in the session list because the metadata file exists. Clicking it fails because the JSONL is gone — Desktop surfaces the "Session not found on disk" error rather than the "No messages yet" placeholder of the missing-link case.
 
 Recovery depends entirely on whether a backup copy exists. `find_missing_jsonls_in_backup.py` searches a user-specified backup directory for the missing JSONL by session ID. If neither the live directory nor any backup contains the file, the conversation content is unrecoverable.
 
@@ -118,7 +118,7 @@ Recovery depends entirely on whether a backup copy exists. `find_missing_jsonls_
 
 ## Synthesising metadata for orphaned JSONLs
 
-If JSONL transcripts exist on disk but no metadata file references them, Desktop will not show those sessions in the history picker. `synth_session_metadata.py` creates metadata files for orphaned JSONLs by reading the transcript directly.
+If JSONL transcripts exist on disk but no metadata file references them, Desktop will not show those sessions in the session list. `synth_session_metadata.py` creates metadata files for orphan JSONLs by reading the transcript directly.
 
 Metadata field sources during synthesis:
 
@@ -137,6 +137,20 @@ Two constraints observed in working metadata files:
 Worktree sessions also include `branch`, `worktreePath`, `worktreeName`, and `sourceBranch`. Other fields (`completedTurns`, `chromePermissionMode`, `effort`, `alwaysAllowedReasons`, `titleSource`) are optional — synthesis works without them.
 
 **Caution:** Desktop's "delete" UI removes the metadata file but leaves the JSONL on disk. Synthesising all orphaned JSONLs will restore sessions you may have deliberately deleted. Review the dry-run output before applying.
+
+---
+
+## Mutator gates
+
+Every mutating script must pass five gates before it can be merged or run.
+
+1. **Matching fixture.** A directory under `fixtures/<NN>-<name>/state/` reproduces the broken state the mutator targets, plus a `golden/` directory holding the expected `diagnose.py` output, dry-run output, and post-mutation snapshot. Enforced at contribution time — a mutator without a fixture will not be merged.
+2. **Diagnosis-token enforcement.** The script accepts `--diagnosis-id <hex>` and refuses to run if the token does not match a fresh diagnosis of the current state. A stale token — state changed between diagnosis and apply — causes refusal. Enforced at runtime.
+3. **Backup before mutation.** The script writes the original file to `.\repair-backup\<filename>` and verifies the write before touching the live file. A failed backup aborts the mutation. Enforced at runtime.
+4. **Schema probe.** If the state layout is not in the recognised fixture set, the script enters audit-only mode and emits no mutation command. Enforced at runtime.
+5. **Quit-Desktop precondition.** The script checks `claude.exe` in the process list and warns prominently if Desktop is running. Enforced at runtime.
+
+Gates 2–5 implement the safety contract enumerated in [SECURITY.md](../SECURITY.md). Gate 1 is the contribution contract enforced by CI — see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ---
 

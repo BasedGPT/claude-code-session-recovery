@@ -42,6 +42,8 @@ Read the output. It prints what it found, the matched problem, and the exact rep
 
 **You want to know what the scripts touch before running them** → [SECURITY.md](SECURITY.md)
 
+**You want to see which sessions are in which group, or groups disappeared after a Desktop update** → `python tools/groupings/list_groupings.py`
+
 **You are an AI assistant helping a user with this repo** → [AGENTS.md](AGENTS.md)
 
 ## Symptom table
@@ -56,6 +58,7 @@ Run `python tools/diagnose.py` first — it identifies your specific problem and
 | Sessions started from outside any project folder | `python tools/diagnose.py` | [session-recovery.md#old-root-cwd-reference](docs/session-recovery.md#old-root-cwd-reference) |
 | One project, two sets of sessions | `python tools/diagnose.py` | [session-recovery.md#junction-realpath-slug-mismatch](docs/session-recovery.md#junction-realpath-slug-mismatch) |
 | Sessions missing from Desktop session list | `python tools/diagnose.py` | [session-recovery.md#orphan-jsonl-no-metadata](docs/session-recovery.md#orphan-jsonl-no-metadata) |
+| Group assignments wiped or missing after Desktop update | `python tools/groupings/list_groupings.py` | [architecture.md#session-grouping-layer](docs/architecture.md#session-grouping-layer) — read-only diagnostic; no automated fix |
 
 ---
 

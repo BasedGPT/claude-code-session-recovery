@@ -2,7 +2,7 @@
 
 > Tested against Claude Code CLI v2.1.121 on Windows 11 — 2026-05-19. Claude Desktop version detected at runtime by `diagnose.py`.
 
-Something broke somewhere with your sessions in Claude Desktop. This repo fixes that.
+Something broke somewhere with your sessions in Claude Desktop. Because I'm a bit special I've broken my Desktop sessions in lots of different ways. I made this to help you diagnose and hopefully fix it if something has gone wrong for you too.
 
 ## Where to start
 

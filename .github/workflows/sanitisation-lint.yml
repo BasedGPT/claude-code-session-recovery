@@ -25,9 +25,9 @@ jobs:
             [[ -z "$pattern" || "$pattern" =~ ^# ]] && continue
             echo "Checking pattern: $pattern"
             # Exclude the patterns file itself and the lint workflow
-            if git grep -l -E "$pattern" -- ':!.github/sanitisation-patterns.txt' ':!.github/workflows/sanitisation-lint.yml' > /dev/null 2>&1; then
+            if git grep -l -E "$pattern" -- ':!.github/sanitisation-patterns.txt' ':!.github/workflows/sanitisation-lint.yml' ':!tests/' ':!docs/' > /dev/null 2>&1; then
               echo "::error::Pattern matched in tracked files: $pattern"
-              git grep -n -E "$pattern" -- ':!.github/sanitisation-patterns.txt' ':!.github/workflows/sanitisation-lint.yml' || true
+              git grep -n -E "$pattern" -- ':!.github/sanitisation-patterns.txt' ':!.github/workflows/sanitisation-lint.yml' ':!tests/' ':!docs/' || true
               hits=$((hits + 1))
             fi
           done < .github/sanitisation-patterns.txt

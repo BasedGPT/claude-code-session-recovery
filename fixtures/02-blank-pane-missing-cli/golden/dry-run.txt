@@ -1,0 +1,18 @@
+Metadata files: 10 (linked: 8, missing cliSessionId: 2)
+JSONL files: 10
+Match window: +-5000ms
+Mode: dry-run (use --apply to mutate)
+Diagnosis ID: 4ddac9f8
+
+  REPAIR  local_09.json
+          2025-01-09T00:00:00 | 'Fixture 02 session 9 (no CLI)'
+          cliSessionId = f1xe0202-0202-0009-aaaa-000000000000
+          first user: 'Fixture 02 session 9 message'
+
+  REPAIR  local_10.json
+          2025-01-10T00:00:00 | 'Fixture 02 session 10 (no CLI)'
+          cliSessionId = f1xe0202-0202-0010-aaaa-000000000000
+          first user: 'Fixture 02 session 10 message'
+
+Repaired: 2  Refused (multi-candidate): 0  Orphan (no JSONL): 0
+Review dry-run output above, then re-run with --apply to apply changes.

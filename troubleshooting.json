@@ -1,0 +1,93 @@
+[
+  {
+    "id": "blank-pane-missing-cli",
+    "domain": "session",
+    "problem": "Claude Desktop history shows old sessions, but clicking them shows a blank pane",
+    "what_to_do": "Run tools/diagnose.py first. It will print the exact next command.",
+    "details": "docs/session-recovery.md#blank-pane",
+    "safety": "Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.",
+    "fixture": "02-blank-pane-missing-cli",
+    "mutator": "tools/sessions/repair_session_metadata.py",
+    "match": {
+      "any": [
+        {"snapshot.metadata_missing_cli_count": {">=": 1}}
+      ]
+    }
+  },
+  {
+    "id": "cli-points-missing-jsonl",
+    "domain": "session",
+    "problem": "Claude Desktop shows a session in history but opening it shows no conversation content",
+    "what_to_do": "Run tools/diagnose.py first. It will check whether a backup copy of the transcript exists.",
+    "details": "docs/session-recovery.md#missing-jsonl",
+    "safety": "This may be unrecoverable if no backup exists. Diagnose is read-only.",
+    "fixture": "03-cli-points-missing-jsonl",
+    "mutator": null,
+    "match": {
+      "any": [
+        {"snapshot.metadata_dangling_cli_count": {">=": 1}}
+      ]
+    }
+  },
+  {
+    "id": "duplicate-synth-metadata",
+    "domain": "session",
+    "problem": "Two entries in Claude Desktop history point to the same conversation",
+    "what_to_do": "Run tools/diagnose.py first. It will identify the duplicate metadata files and route you to the cleanup tool.",
+    "details": "docs/session-recovery.md#duplicate-synth-metadata",
+    "safety": "Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.",
+    "fixture": "06-duplicate-synth-metadata",
+    "mutator": "tools/sessions/cleanup_synth_duplicates.py",
+    "match": {
+      "any": [
+        {"snapshot.metadata_duplicate_cli_count": {">=": 1}}
+      ]
+    }
+  },
+  {
+    "id": "old-root-cwd-reference",
+    "domain": "session",
+    "problem": "Sessions show history but are listed under a bare drive root rather than a project folder",
+    "what_to_do": "Run tools/diagnose.py first. These sessions were likely started from a project root before a worktree was set up; the metadata recorded the bare root path instead of the project path.",
+    "details": "docs/session-recovery.md#old-root-cwd-reference",
+    "safety": "These sessions are typically read-only recoverable. Diagnose is read-only and safe to run anytime.",
+    "fixture": "07-old-root-cwd-reference",
+    "mutator": null,
+    "match": {
+      "any": [
+        {"snapshot.cwd_prefix_types.bare_root": {">=": 1}}
+      ]
+    }
+  },
+  {
+    "id": "junction-realpath-slug-mismatch",
+    "domain": "session",
+    "problem": "Sessions started from a Windows junction path show separate history from sessions at the real path",
+    "what_to_do": "Run tools/diagnose.py first. It will identify which metadata files use the junction path and whether repointing is safe.",
+    "details": "docs/session-recovery.md#junction-realpath",
+    "safety": "Quit Claude Desktop fully before any mutation. Do not remove the junction while any session using it is active.",
+    "fixture": "05-junction-realpath-slug-mismatch",
+    "mutator": "tools/sessions/repoint_session_to_jsonl.py",
+    "match": {
+      "any": [
+        {"snapshot.cwd_slug_mismatch_count": {">=": 1}}
+      ]
+    }
+  },
+  {
+    "id": "orphan-jsonl-no-metadata",
+    "domain": "session",
+    "problem": "Claude Desktop does not show some sessions in history at all, even though conversation transcripts exist on disk",
+    "what_to_do": "Run tools/diagnose.py first. It will count the orphaned transcripts and route you to the synthesis tool.",
+    "details": "docs/session-recovery.md#orphan-jsonl",
+    "safety": "Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.",
+    "fixture": "13-orphan-jsonl-no-metadata",
+    "mutator": "tools/sessions/synth_session_metadata.py",
+    "match": {
+      "all": [
+        {"snapshot.jsonl_orphan_count": {">=": 1}},
+        {"snapshot.metadata_missing_cli_count": {"==": 0}}
+      ]
+    }
+  }
+]

@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"Fixture 02 session 10 message"},"timestamp":"2025-01-10T00:00:01.000Z","sessionId":"f1xe0202-0202-0010-aaaa-000000000000"}
+{"type":"assistant","message":{"role":"assistant","content":"Fixture 02 session 10 response"},"timestamp":"2025-01-10T00:00:02.000Z","sessionId":"f1xe0202-0202-0010-aaaa-000000000000"}

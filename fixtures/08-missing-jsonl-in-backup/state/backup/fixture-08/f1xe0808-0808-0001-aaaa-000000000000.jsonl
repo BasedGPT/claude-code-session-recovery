@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": "Fixture 08 session 1 message"}, "timestamp": "2025-01-01T00:00:01.000Z", "sessionId": "f1xe0808-0808-0001-aaaa-000000000000"}
+{"type": "assistant", "message": {"role": "assistant", "content": "Fixture 08 session 1 response"}, "timestamp": "2025-01-01T00:00:02.000Z", "sessionId": "f1xe0808-0808-0001-aaaa-000000000000"}

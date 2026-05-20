@@ -1,0 +1,44 @@
+{
+  "diagnosis_id": "f7ce459b",
+  "tested_against": {
+    "claude_desktop": null,
+    "claude_code_cli": null,
+    "windows": "11"
+  },
+  "schema_probe": "recognised",
+  "desktop_running": false,
+  "matched_problems": [
+    {
+      "id": "cli-points-missing-jsonl",
+      "domain": "session",
+      "mutator": null,
+      "next_command": null,
+      "safety_preconditions": [
+        "This may be unrecoverable if no backup exists. Diagnose is read-only."
+      ]
+    }
+  ],
+  "audit_only_problems": [],
+  "schema_mismatch": false,
+  "snapshot": {
+    "total_metadata_count": 3,
+    "metadata_with_cli_count": 3,
+    "metadata_missing_cli_count": 0,
+    "metadata_dangling_cli_count": 3,
+    "metadata_duplicate_cli_count": 0,
+    "cwd_junction_mismatch_count": 0,
+    "jsonl_orphan_count": 0,
+    "cwd_slug_mismatch_count": 0,
+    "cwd_prefix_types": {
+      "junction": 0,
+      "canonical": 0,
+      "bare_root": 0,
+      "other": 3
+    },
+    "jsonl_count": 0,
+    "schema_version": "recognised",
+    "desktop_version": null,
+    "cli_version": null,
+    "desktop_running": false
+  }
+}

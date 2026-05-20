@@ -1,0 +1,14 @@
+DIAGNOSE -- Claude Code Desktop Session Recovery Tools
+------------------------------------------------------------
+Diagnosis ID : 4ddac9f8
+Metadata     : 10 files  (8 with cliSessionId,  2 missing)
+JSONL files  : 10
+
+PROBLEM FOUND: Claude Desktop history shows old sessions, but clicking them shows a blank pane
+  Details: docs/session-recovery.md#blank-pane
+  Safety : Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.
+
+  To repair -- dry-run first, review output, then add --apply:
+    python tools/sessions/repair_session_metadata.py --diagnosis-id 4ddac9f8
+    python tools/sessions/repair_session_metadata.py --diagnosis-id 4ddac9f8 --apply
+

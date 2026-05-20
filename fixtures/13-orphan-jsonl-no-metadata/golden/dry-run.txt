@@ -1,0 +1,17 @@
+Orphan JSONLs (no metadata): 2
+Mode: dry-run (writing to ./synth-out/)
+Diagnosis ID: 02fff490
+
+  SYNTH f1xe1313-1313-0004-aaaa-000000000000
+        2025-01-04T00:00:00 | Fixture 13 orphan session 4 message
+        cwd=C:\Users\fixture-user\my-project
+        model=claude-sonnet-4-6  turns=1
+
+  SYNTH f1xe1313-1313-0005-aaaa-000000000000
+        2025-01-05T00:00:00 | Fixture 13 orphan session 5 message
+        cwd=C:\Users\fixture-user\my-project
+        model=claude-sonnet-4-6  turns=1
+
+Generated: 2  Skipped: 0  Failed: 0
+
+Review ./synth-out/ then re-run with --apply to install into AppData.

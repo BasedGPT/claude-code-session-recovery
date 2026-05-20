@@ -1,0 +1,44 @@
+{
+  "diagnosis_id": "042be50c",
+  "tested_against": {
+    "claude_desktop": null,
+    "claude_code_cli": null,
+    "windows": "11"
+  },
+  "schema_probe": "recognised",
+  "desktop_running": false,
+  "matched_problems": [
+    {
+      "id": "old-root-cwd-reference",
+      "domain": "session",
+      "mutator": null,
+      "next_command": null,
+      "safety_preconditions": [
+        "These sessions are typically read-only recoverable. Diagnose is read-only and safe to run anytime."
+      ]
+    }
+  ],
+  "audit_only_problems": [],
+  "schema_mismatch": false,
+  "snapshot": {
+    "total_metadata_count": 5,
+    "metadata_with_cli_count": 5,
+    "metadata_missing_cli_count": 0,
+    "metadata_dangling_cli_count": 0,
+    "metadata_duplicate_cli_count": 0,
+    "cwd_junction_mismatch_count": 0,
+    "jsonl_orphan_count": 0,
+    "cwd_slug_mismatch_count": 0,
+    "cwd_prefix_types": {
+      "junction": 0,
+      "canonical": 0,
+      "bare_root": 5,
+      "other": 0
+    },
+    "jsonl_count": 5,
+    "schema_version": "recognised",
+    "desktop_version": null,
+    "cli_version": null,
+    "desktop_running": false
+  }
+}

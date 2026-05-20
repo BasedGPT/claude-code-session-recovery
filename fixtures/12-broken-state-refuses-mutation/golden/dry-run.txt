@@ -1,0 +1,9 @@
+Metadata files: 10 (linked: 8, missing cliSessionId: 2)
+JSONL files: 10
+Match window: +-5000ms
+Mode: dry-run (use --apply to mutate)
+Diagnosis ID: 4ddac9f8
+
+  ORPHAN  local_09.json | 2025-01-18T00:00:00 | 'Fixture 12 session 9 (no CLI)' -- no JSONL match in window
+  ORPHAN  local_10.json | 2025-01-19T00:00:00 | 'Fixture 12 session 10 (no CLI)' -- no JSONL match in window
+Repaired: 0  Refused (multi-candidate): 0  Orphan (no JSONL): 2

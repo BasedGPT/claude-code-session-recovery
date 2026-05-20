@@ -1,0 +1,2 @@
+{"type": "user", "timestamp": "2025-01-05T00:00:00.000Z", "cwd": "C:\\Users\\fixture-user\\Sync\\new-canonical-name", "message": {"role": "user", "content": [{"type": "text", "text": "Fixture 05 session 5 message"}]}, "sessionId": "f1xe0505-0505-0005-aaaa-000000000000"}
+{"type": "assistant", "timestamp": "2025-01-05T00:00:01.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Response"}], "model": "claude-sonnet-4-6"}, "sessionId": "f1xe0505-0505-0005-aaaa-000000000000"}

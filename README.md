@@ -7,7 +7,7 @@
 
 Something broke somewhere with your sessions in Claude Desktop. Because I'm a bit special I've broken my Desktop sessions in lots of different ways. I made this to help you diagnose and hopefully fix it if something has gone wrong for you too.
 
-## Fix it with Claude Code (recommended)
+## Fix it with Claude Code (or any AI)
 
 This runs best from a **Claude Code CLI session**, not from Claude Desktop. If you try it from Desktop, the tool will detect that and warn you.
 
@@ -34,7 +34,7 @@ My Claude Code sessions are broken on Windows. Please help me fix them using htt
 6. Tell me what was found and what was fixed
 ```
 
-## Fix it yourself (no AI needed)
+## Fix it yourself
 
 ```
 git clone https://github.com/BasedGPT/claude-code-session-recovery

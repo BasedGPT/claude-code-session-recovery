@@ -243,6 +243,8 @@ def main():
     if not use_defaults:
         print("  Try system shadow copies (Explorer > Previous Versions) for any")
         print("  listed here.")
+        if args.backup and not_found:
+            print("  For a full recovery checklist: docs/recovering-deleted-jsonls.md")
     for meta_file, cli_sid, title in not_found:
         print("  {} {} {}".format(meta_file, cli_sid[:8], title))
 

@@ -1,13 +1,12 @@
 DIAGNOSE -- Claude Code Desktop Session Recovery Tools
 ------------------------------------------------------------
-Diagnosis ID : b0c347cc
+Diagnosis ID : 35952a63
 Metadata     : 5 files  (5 with cliSessionId,  0 missing)
 JSONL files  : 0
 
 PROBLEM FOUND: Session is in the session list but its conversation history is missing from disk
   Details: docs/session-recovery.md#cli-points-missing-jsonl
-  Safety : This may be unrecoverable if no backup exists. Diagnose is read-only.
+  Safety : Needs investigation. The JSONL may exist in a backup, shadow copy, or cloud version history. Diagnose is read-only.
 
-  No automatic repair for this state. See:
-    docs/session-recovery.md#cli-points-missing-jsonl
+  Next:  python tools/sessions/find_missing_jsonls_in_backup.py [--backup PATH]
 

@@ -5,7 +5,7 @@ Your Claude Desktop is broken in one of these ways. Run `python tools/diagnose.p
 | Problem | Has automatic repair? |
 |---|---|
 | Session missing conversation history | Yes |
-| Conversation history missing from disk | No (may be unrecoverable) |
+| Conversation history missing from disk | No (needs investigation) |
 | Two sessions, same conversation history | Yes |
 | Sessions started from outside any project folder | No (cosmetic only) |
 | One project, two sets of sessions | Yes |
@@ -45,19 +45,18 @@ PROBLEM FOUND: Sessions appear in the session list but open with no conversation
 
 **What you see.** You open Claude Desktop. Your session list looks normal. You click an affected session. Instead of a conversation, the main pane shows three lines: **"Session not found on disk"** at the top, then **"Send a message to start fresh in this directory"** as an invitation. Two buttons sit underneath: **Archive** and **Delete**.
 
-**Why it happens (plain).** Every Claude Desktop session is stored as two pieces: one with the title, date, and model, and one with the conversation itself. The link between them is intact for this session — but the file that holds the conversation is missing from disk. Desktop follows the link, finds nothing on the other end, and tells you so directly. There's no automatic repair: the conversation isn't recoverable unless you have a backup of that file somewhere.
+**Why it happens (plain).** Every Claude Desktop session is stored as two pieces: one with the title, date, and model, and one with the conversation itself. The link between them is intact for this session — but the file that holds the conversation is missing from disk. Desktop follows the link, finds nothing on the other end, and tells you so directly. There's no automatic repair that runs on your machine. Whether the conversation can be recovered depends on what backups exist — it's worth investigating before concluding it's gone.
 
-**Why it happens (technical).** The metadata's `cliSessionId` is present and resolves to a valid-looking transcript path: `~\.claude\projects\<project-slug>\<uuid>.jsonl`. But no file exists at that path. Desktop surfaces this with the "Session not found on disk" error and the option to Archive or Delete the metadata entry. There's no automatic repair — recovery depends on whether the `.jsonl` file exists in a backup. See [architecture.md#missing-jsonls-separate-failure-mode](architecture.md#missing-jsonls-separate-failure-mode) for the full discussion.
+**Why it happens (technical).** The metadata's `cliSessionId` is present and resolves to a valid-looking transcript path: `~\.claude\projects\<project-slug>\<uuid>.jsonl`. But no file exists at that path. Desktop surfaces this with the "Session not found on disk" error and the option to Archive or Delete the metadata entry. There's no automatic on-disk repair. Recovery depends on finding the `.jsonl` file in a backup, shadow copy, or version history — see [docs/recovering-deleted-jsonls.md](recovering-deleted-jsonls.md) for the search checklist. See [architecture.md#missing-jsonls-separate-failure-mode](architecture.md#missing-jsonls-separate-failure-mode) for the full discussion.
 
 **What `diagnose.py` reports:**
 
 ```
 PROBLEM FOUND: Session is in the session list but its conversation history is missing from disk
   Details: docs/session-recovery.md#cli-points-missing-jsonl
-  Safety: This may be unrecoverable if no backup exists. Diagnose is read-only.
+  Safety : Needs investigation. The JSONL may exist in a backup, shadow copy, or cloud version history. Diagnose is read-only.
 
-  No automatic repair for this state. See:
-    docs/session-recovery.md#cli-points-missing-jsonl
+  Next:  python tools/sessions/find_missing_jsonls_in_backup.py [--backup PATH]
 ```
 
 `diagnose.py` will also print how many sessions are in this state.
@@ -65,7 +64,7 @@ PROBLEM FOUND: Session is in the session list but its conversation history is mi
 **Recovery options:**
 
 - `find_missing_jsonls_in_backup.py` searches a backup directory you specify for the missing transcript by session ID. Point it at any external backup you maintain.
-- If no backup exists, the conversation content is gone. The metadata (title, model, date) is intact, but there is nothing to render.
+- If no backup is found after working through [docs/recovering-deleted-jsonls.md](recovering-deleted-jsonls.md), the conversation content is likely gone. The metadata (title, model, date) remains intact.
 
 **Recovery time:** 5–15 minutes if a backup exists. Immediate if no backup.
 

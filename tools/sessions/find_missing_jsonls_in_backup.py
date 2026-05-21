@@ -8,9 +8,10 @@ roots for a matching <cli-session-id>.jsonl file. Reports which sessions are
 recoverable and which are gone entirely.
 
 Recovery sources searched, in priority order:
-  1. Each directory listed in BACKUP_ROOTS (edit the Configuration block below).
-  2. Any slug directory under the live PROJECTS_DIR that holds the file at a
-     different path than expected (slug mismatch).
+  1. The path given by --backup (if provided).
+  2. Each directory listed in BACKUP_ROOTS (edit the Configuration block below).
+  3. Default cloud-sync locations probed automatically when neither of the
+     above is configured.
 
 Read-only. Mutates nothing.
 
@@ -29,9 +30,11 @@ Exit code:
 Usage:
   python tools/sessions/find_missing_jsonls_in_backup.py
   python tools/sessions/find_missing_jsonls_in_backup.py --quiet
+  python tools/sessions/find_missing_jsonls_in_backup.py --backup <path>
   python tools/sessions/find_missing_jsonls_in_backup.py --state <fixture-state-path>
 """
 import argparse
+import glob
 import json
 import os
 import sys
@@ -99,8 +102,36 @@ def _find_missing(appdata_claude_dir, projects_dir):
     return out
 
 
+# Subdirectory names to skip during recursive default-location search.
+# These are large or irrelevant trees that would slow the walk significantly.
+_SKIP_DIRS = {"node_modules", ".git", "Photos", "Videos", "Music"}
+
+# Default cloud-sync roots to probe when --backup is not given and BACKUP_ROOTS
+# is empty. Glob patterns are expanded at runtime.
+_DEFAULT_LOCATIONS_PATTERNS = [
+    os.path.join(os.path.expanduser("~"), "OneDrive"),
+    os.path.join(os.path.expanduser("~"), "OneDrive - *"),
+    os.path.join(os.path.expanduser("~"), "Dropbox"),
+    os.path.join(os.path.expanduser("~"), "iCloudDrive"),
+    os.path.join(os.path.expanduser("~"), "Box"),
+    os.path.join(os.path.expanduser("~"), "Google Drive"),
+]
+
+
+def _expand_default_locations():
+    """Return (pattern, resolved_paths) pairs for the default location patterns."""
+    results = []
+    for pattern in _DEFAULT_LOCATIONS_PATTERNS:
+        if "*" in pattern:
+            expanded = sorted(glob.glob(pattern))
+        else:
+            expanded = [pattern] if os.path.isdir(pattern) else []
+        results.append((pattern, expanded))
+    return results
+
+
 def _search_backup(cli_sid, backup_roots):
-    """Search backup root directories for <cli_sid>.jsonl."""
+    """Search backup root directories for <cli_sid>.jsonl (shallow, one level deep)."""
     fname = "{}.jsonl".format(cli_sid)
     matches = []
     for root in backup_roots:
@@ -116,6 +147,28 @@ def _search_backup(cli_sid, backup_roots):
     return matches
 
 
+def _search_location_recursive(location_dir, dangling_sids, quiet=False):
+    """
+    Walk location_dir recursively, skipping _SKIP_DIRS.
+    Print 'FOUND: <sid> at <path>' for any .jsonl whose stem is in dangling_sids.
+    Returns the count of matches found.
+    """
+    found = 0
+    target_sids = set(dangling_sids)
+    for dirpath, dirnames, filenames in os.walk(location_dir, topdown=True):
+        # Prune unwanted subtrees in-place so os.walk won't descend into them.
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for fname in filenames:
+            if not fname.endswith(".jsonl"):
+                continue
+            stem = fname[:-6]  # strip ".jsonl"
+            if stem in target_sids:
+                full_path = os.path.join(dirpath, fname)
+                print("FOUND: {} at {}".format(stem, full_path))
+                found += 1
+    return found
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -125,6 +178,9 @@ def main():
                     help="Print summary counts only.")
     ap.add_argument("--state", metavar="PATH", default=None,
                     help="Fixture state directory for testing.")
+    ap.add_argument("--backup", metavar="PATH", default=None,
+                    help="Single backup root to search (overrides BACKUP_ROOTS and "
+                         "default location probing).")
     args = ap.parse_args()
 
     if args.state:
@@ -132,10 +188,17 @@ def main():
         appdata_claude_dir = os.path.join(state_abs, "appdata", "Claude")
         projects_dir = os.path.join(state_abs, "projects")
         backup_roots = []
+        use_defaults = False
+    elif args.backup:
+        appdata_claude_dir = APPDATA_CLAUDE_DIR
+        projects_dir = PROJECTS_DIR
+        backup_roots = [args.backup]
+        use_defaults = False
     else:
         appdata_claude_dir = APPDATA_CLAUDE_DIR
         projects_dir = PROJECTS_DIR
         backup_roots = BACKUP_ROOTS
+        use_defaults = not BACKUP_ROOTS  # probe defaults only when BACKUP_ROOTS is empty
 
     snapshot = build_snapshot(
         appdata_claude_dir, projects_dir,
@@ -153,6 +216,7 @@ def main():
     if not targets:
         return 0
 
+    # --- Explicit backup roots (--backup or BACKUP_ROOTS) ---
     in_backup = []
     not_found = []
     for meta_file, cli_sid, title, created_at in targets:
@@ -163,8 +227,8 @@ def main():
             not_found.append((meta_file, cli_sid, title))
 
     print("=== Recoverable from backup ({}) ===".format(len(in_backup)))
-    if not BACKUP_ROOTS:
-        print("  (no backup roots configured -- edit BACKUP_ROOTS in this script)")
+    if not backup_roots and not use_defaults:
+        print("  (no backup roots configured -- edit BACKUP_ROOTS in this script or use --backup)")
     for meta_file, cli_sid, title, hits in in_backup:
         print("  {} {} {}".format(meta_file, cli_sid[:8], title))
         if not args.quiet:
@@ -173,8 +237,9 @@ def main():
 
     print()
     print("=== Not found in any backup ({}) ===".format(len(not_found)))
-    print("  Try system shadow copies (Explorer > Previous Versions) for any")
-    print("  listed here.")
+    if not use_defaults:
+        print("  Try system shadow copies (Explorer > Previous Versions) for any")
+        print("  listed here.")
     for meta_file, cli_sid, title in not_found:
         print("  {} {} {}".format(meta_file, cli_sid[:8], title))
 
@@ -182,7 +247,45 @@ def main():
     print("Summary: {} recoverable from backup, {} not found.".format(
         len(in_backup), len(not_found)))
 
+    # --- Default location probing (when no explicit roots configured) ---
+    if use_defaults and not_found:
+        dangling_sids = [cli_sid for _, cli_sid, _ in not_found]
+        print()
+        _probe_default_locations(dangling_sids, quiet=args.quiet)
+
     return 0
+
+
+def _probe_default_locations(dangling_sids, quiet=False):
+    """Probe default cloud-sync locations for any of the dangling session IDs."""
+    location_pairs = _expand_default_locations()
+
+    # Separate into found (dirs that exist) and not-found (patterns with no match).
+    existing_dirs = []
+    checked_patterns = []
+    for pattern, resolved in location_pairs:
+        checked_patterns.append(pattern)
+        for d in resolved:
+            if os.path.isdir(d):
+                existing_dirs.append(d)
+
+    if not existing_dirs:
+        print("No default backup locations found. Locations checked:")
+        for p in checked_patterns:
+            print("  {}".format(p))
+        print("See docs/recovering-deleted-jsonls.md for recovery options.")
+        return
+
+    total_found = 0
+    for location_dir in existing_dirs:
+        print("Searching {} ...".format(location_dir))
+        count = _search_location_recursive(location_dir, dangling_sids, quiet=quiet)
+        total_found += count
+
+    print()
+    if total_found == 0:
+        print("No matches found in any probed location.")
+        print("See docs/recovering-deleted-jsonls.md for more recovery options.")
 
 
 if __name__ == "__main__":

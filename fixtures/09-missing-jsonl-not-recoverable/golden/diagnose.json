@@ -1,5 +1,5 @@
 {
-  "diagnosis_id": "b0c347cc",
+  "diagnosis_id": "35952a63",
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
@@ -14,7 +14,7 @@
       "mutator": null,
       "next_command": null,
       "safety_preconditions": [
-        "This may be unrecoverable if no backup exists. Diagnose is read-only."
+        "Needs investigation. The JSONL may exist in a backup, shadow copy, or cloud version history. Diagnose is read-only."
       ]
     }
   ],
@@ -39,6 +39,7 @@
     "schema_version": "recognised",
     "desktop_version": null,
     "cli_version": null,
-    "desktop_running": false
+    "desktop_running": false,
+    "running_inside_desktop": false
   }
 }

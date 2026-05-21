@@ -20,7 +20,8 @@
     "problem": "Session is in the session list but its conversation history is missing from disk",
     "what_to_do": "Run tools/diagnose.py first. It will check whether a backup copy of the transcript exists.",
     "details": "docs/session-recovery.md#cli-points-missing-jsonl",
-    "safety": "This may be unrecoverable if no backup exists. Diagnose is read-only.",
+    "safety": "Needs investigation. The JSONL may exist in a backup, shadow copy, or cloud version history. Diagnose is read-only.",
+    "next_command": "python tools/sessions/find_missing_jsonls_in_backup.py [--backup PATH]",
     "fixture": "03-cli-points-missing-jsonl",
     "mutator": null,
     "match": {

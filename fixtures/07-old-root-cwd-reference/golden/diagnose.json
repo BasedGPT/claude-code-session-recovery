@@ -1,5 +1,5 @@
 {
-  "diagnosis_id": "042be50c",
+  "diagnosis_id": "7753561c",
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
@@ -39,6 +39,7 @@
     "schema_version": "recognised",
     "desktop_version": null,
     "cli_version": null,
-    "desktop_running": false
+    "desktop_running": false,
+    "running_inside_desktop": false
   }
 }

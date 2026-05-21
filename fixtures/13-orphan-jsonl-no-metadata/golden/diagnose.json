@@ -1,5 +1,5 @@
 {
-  "diagnosis_id": "02fff490",
+  "diagnosis_id": "393fb142",
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
@@ -12,7 +12,7 @@
       "id": "orphan-jsonl-no-metadata",
       "domain": "session",
       "mutator": "tools/sessions/synth_session_metadata.py",
-      "next_command": "python tools/sessions/synth_session_metadata.py --diagnosis-id 02fff490",
+      "next_command": "python tools/sessions/synth_session_metadata.py --diagnosis-id 393fb142",
       "safety_preconditions": [
         "Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime."
       ]
@@ -39,6 +39,7 @@
     "schema_version": "recognised",
     "desktop_version": null,
     "cli_version": null,
-    "desktop_running": false
+    "desktop_running": false,
+    "running_inside_desktop": false
   }
 }

@@ -2,7 +2,7 @@ Metadata files: 10 (linked: 8, missing cliSessionId: 2)
 JSONL files: 10
 Match window: +-5000ms
 Mode: dry-run (use --apply to mutate)
-Diagnosis ID: 4ddac9f8
+Diagnosis ID: b5d5a6bb
 
   REPAIR  local_09.json
           2025-01-09T00:00:00 | 'Fixture 02 session 9 (no CLI)'

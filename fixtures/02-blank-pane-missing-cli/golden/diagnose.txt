@@ -1,6 +1,6 @@
 DIAGNOSE -- Claude Code Desktop Session Recovery Tools
 ------------------------------------------------------------
-Diagnosis ID : 4ddac9f8
+Diagnosis ID : b5d5a6bb
 Metadata     : 10 files  (8 with cliSessionId,  2 missing)
 JSONL files  : 10
 
@@ -9,6 +9,6 @@ PROBLEM FOUND: Sessions appear in the session list but open with no conversation
   Safety : Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.
 
   To repair -- dry-run first, review output, then add --apply:
-    python tools/sessions/repair_session_metadata.py --diagnosis-id 4ddac9f8
-    python tools/sessions/repair_session_metadata.py --diagnosis-id 4ddac9f8 --apply
+    python tools/sessions/repair_session_metadata.py --diagnosis-id b5d5a6bb
+    python tools/sessions/repair_session_metadata.py --diagnosis-id b5d5a6bb --apply
 

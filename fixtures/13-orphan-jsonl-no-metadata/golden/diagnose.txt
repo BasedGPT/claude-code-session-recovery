@@ -1,6 +1,6 @@
 DIAGNOSE -- Claude Code Desktop Session Recovery Tools
 ------------------------------------------------------------
-Diagnosis ID : 02fff490
+Diagnosis ID : 393fb142
 Metadata     : 3 files  (3 with cliSessionId,  0 missing)
 JSONL files  : 5
 
@@ -9,6 +9,6 @@ PROBLEM FOUND: Sessions are absent from the session list even though their trans
   Safety : Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.
 
   To repair -- dry-run first, review output, then add --apply:
-    python tools/sessions/synth_session_metadata.py --diagnosis-id 02fff490
-    python tools/sessions/synth_session_metadata.py --diagnosis-id 02fff490 --apply
+    python tools/sessions/synth_session_metadata.py --diagnosis-id 393fb142
+    python tools/sessions/synth_session_metadata.py --diagnosis-id 393fb142 --apply
 

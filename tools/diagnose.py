@@ -146,8 +146,16 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
     jsonl_index = _build_jsonl_index(projects_dir)
 
     total = len(meta_files)
-    missing_cli = sum(1 for _, d in meta_files if not d.get("cliSessionId"))
-    with_cli = total - missing_cli
+    # Archived sessions are hidden from Desktop's history picker, so a missing
+    # cliSessionId on an archived session does not cause a user-visible
+    # blank-pane. Counting them here would trigger a false-positive
+    # blank-pane-missing-cli problem report. The audit tool surfaces them
+    # separately in the archived_no_cli bucket if the user explicitly looks.
+    missing_cli = sum(
+        1 for _, d in meta_files
+        if not d.get("cliSessionId") and not d.get("isArchived")
+    )
+    with_cli = sum(1 for _, d in meta_files if d.get("cliSessionId"))
 
     dangling_cli = sum(
         1 for _, d in meta_files
@@ -222,10 +230,12 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         desktop_version = None
         cli_version = None
         desktop_running = False
+        running_inside_desktop = False
     else:
         desktop_version = _detect_desktop_version()
         cli_version = _detect_cli_version()
         desktop_running = _detect_desktop_running()
+        running_inside_desktop = _detect_running_inside_desktop() if desktop_running else False
 
     return {
         "total_metadata_count": total,
@@ -242,6 +252,7 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         "desktop_version": desktop_version,
         "cli_version": cli_version,
         "desktop_running": desktop_running,
+        "running_inside_desktop": running_inside_desktop,
     }
 
 
@@ -280,16 +291,102 @@ def _detect_cli_version():
 
 
 def _detect_desktop_running():
+    """Return True only if Claude Desktop (not just the CLI) is running.
+
+    Both Desktop and the CLI appear in tasklist as `claude.exe`, so we
+    cannot rely on the process name alone. Desktop installs under
+    `%LOCALAPPDATA%\\AnthropicClaude\\app-<version>\\Claude.exe`; the CLI
+    runs from wherever npm installed it (typically not under AnthropicClaude).
+    We enumerate running `claude.exe` processes and check their executable
+    paths. Returns False if no claude.exe under AnthropicClaude is running,
+    so a standalone CLI session does not trigger the "QUIT DESKTOP" warning.
+    """
+    # Try wmic first (deprecated but still present on most installs)
+    try:
+        result = subprocess.run(
+            ["wmic", "process", "where", "name='claude.exe'",
+             "get", "ExecutablePath", "/format:csv"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                low = line.lower()
+                if "anthropicclaude" in low and "claude.exe" in low:
+                    return True
+            # wmic ran successfully -- absence of AnthropicClaude path means
+            # any claude.exe in tasklist is the CLI, not Desktop.
+            return False
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    # Fallback: PowerShell on systems where wmic is missing (Win11 22H2+).
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-Process claude -ErrorAction SilentlyContinue | "
+             "ForEach-Object { $_.Path }"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if "anthropicclaude" in line.lower():
+                    return True
+            return False
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    # Both detection paths failed -- err on the side of caution and report
+    # claude.exe presence (the original behaviour). Better to warn unnecessarily
+    # than to miss a real running Desktop.
     try:
         result = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq claude.exe"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        return "claude.exe" in result.stdout.lower()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _detect_running_inside_desktop():
+    """Return True if this process is a descendant of claude.exe.
+
+    Walks the process tree upward from the current PID using wmic. Returns
+    False on any error so the caller degrades gracefully.
+    """
+    try:
+        result = subprocess.run(
+            ["wmic", "process", "get", "ProcessId,ParentProcessId,Name", "/format:csv"],
             capture_output=True,
             text=True,
             timeout=10,
             check=False,
         )
-        return "claude.exe" in result.stdout.lower()
-    except (OSError, subprocess.TimeoutExpired):
+        # CSV columns: Node, Name, ParentProcessId, ProcessId
+        procs = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split(",")
+            if len(parts) < 4:
+                continue
+            try:
+                name = parts[1].lower()
+                parent_pid = int(parts[2])
+                pid = int(parts[3])
+                procs[pid] = (name, parent_pid)
+            except (ValueError, IndexError):
+                continue
+        current = os.getpid()
+        visited = set()
+        while current and current not in visited:
+            visited.add(current)
+            if current not in procs:
+                break
+            name, parent = procs[current]
+            if "claude" in name:
+                return True
+            current = parent
+        return False
+    except Exception:
         return False
 
 
@@ -309,7 +406,10 @@ def make_diagnosis_id(snapshot):
         "metadata_with_cli_count",
         "metadata_missing_cli_count",
         "metadata_dangling_cli_count",
+        "metadata_duplicate_cli_count",
         "cwd_junction_mismatch_count",
+        "cwd_slug_mismatch_count",
+        "jsonl_orphan_count",
         "cwd_prefix_types",
         "jsonl_count",
         "schema_version",
@@ -377,7 +477,7 @@ def eval_match(predicate, snapshot):
 _SEP = "-" * 60
 
 
-def _format_human(diagnosis_id, snapshot, matches, schema_ok):
+def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None):
     lines = [
         "DIAGNOSE -- Claude Code Desktop Session Recovery Tools",
         _SEP,
@@ -396,11 +496,23 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok):
     lines.append("")
 
     if snapshot.get("desktop_running"):
-        lines.append("WARNING: Claude Desktop appears to be running (claude.exe in tasklist).")
-        lines.append("  Diagnose is safe -- it is read-only.")
-        lines.append("  Repair commands below will NOT work until Desktop is fully quit.")
-        lines.append("  Quit: right-click the tray icon -> Quit. Then verify:")
-        lines.append('    tasklist /FI "IMAGENAME eq claude.exe"')
+        if snapshot.get("running_inside_desktop"):
+            lines.append("WARNING: You are running inside Claude Desktop itself.")
+            lines.append("  You cannot quit Desktop to run mutators from this session.")
+            lines.append("")
+            lines.append("  Do this in order:")
+            lines.append("    1. Open a new terminal (cmd, PowerShell, or Windows Terminal)")
+            if repo_root:
+                lines.append('    2. cd "{}"'.format(repo_root))
+            lines.append("    3. Quit Claude Desktop: right-click the tray icon -> Quit")
+            lines.append('    4. tasklist /FI "IMAGENAME eq claude.exe"  -- must show no results')
+            lines.append("    5. Run the repair commands printed below")
+        else:
+            lines.append("WARNING: Claude Desktop appears to be running (claude.exe in tasklist).")
+            lines.append("  Diagnose is safe -- it is read-only.")
+            lines.append("  Repair commands below will NOT work until Desktop is fully quit.")
+            lines.append("  Quit: right-click the tray icon -> Quit. Then verify:")
+            lines.append('    tasklist /FI "IMAGENAME eq claude.exe"')
         lines.append("")
 
     if not schema_ok:
@@ -435,8 +547,11 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok):
                 f" --diagnosis-id {diagnosis_id} --apply"
             )
         else:
-            lines.append("  No automatic repair for this state. See:")
-            lines.append(f"    {row['details']}")
+            if row.get("next_command"):
+                lines.append(f"  Next:  {row['next_command']}")
+            else:
+                lines.append("  No automatic repair for this state. See:")
+                lines.append(f"    {row['details']}")
         lines.append("")
 
     return "\n".join(lines)
@@ -531,7 +646,7 @@ def main():
         }
         print(json.dumps(output, indent=2))
     else:
-        print(_format_human(diagnosis_id, snapshot, matches, schema_ok))
+        print(_format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root))
 
 
 if __name__ == "__main__":

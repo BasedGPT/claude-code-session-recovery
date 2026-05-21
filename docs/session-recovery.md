@@ -54,7 +54,7 @@ PROBLEM FOUND: Sessions appear in the session list but open with no conversation
 ```
 PROBLEM FOUND: Session is in the session list but its conversation history is missing from disk
   Details: docs/session-recovery.md#cli-points-missing-jsonl
-  Safety : Needs investigation. The JSONL may exist in a backup, shadow copy, or cloud version history. Diagnose is read-only.
+  Status : Needs investigation. The JSONL may exist in a backup, shadow copy, or cloud version history. Diagnose is read-only.
 
   Next:  python tools/sessions/find_missing_jsonls_in_backup.py [--backup PATH]
 ```

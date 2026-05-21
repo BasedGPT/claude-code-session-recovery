@@ -533,7 +533,8 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None):
     for row in matches:
         lines.append(f"PROBLEM FOUND: {row['problem']}")
         lines.append(f"  Details: {row['details']}")
-        lines.append(f"  Safety : {row['safety']}")
+        label = "Safety" if row.get("mutator") else "Status"
+        lines.append(f"  {label} : {row['safety']}")
         lines.append("")
         if row.get("mutator"):
             mutator = row["mutator"]
@@ -546,12 +547,11 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None):
                 f"    {quit_prefix}python {mutator}"
                 f" --diagnosis-id {diagnosis_id} --apply"
             )
+        elif row.get("next_command"):
+            lines.append(f"  Next:  {row['next_command']}")
         else:
-            if row.get("next_command"):
-                lines.append(f"  Next:  {row['next_command']}")
-            else:
-                lines.append("  No automatic repair for this state. See:")
-                lines.append(f"    {row['details']}")
+            lines.append("  No automatic repair for this state. See:")
+            lines.append(f"    {row['details']}")
         lines.append("")
 
     return "\n".join(lines)

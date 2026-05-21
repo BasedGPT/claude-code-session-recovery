@@ -6,7 +6,7 @@ JSONL files  : 5
 
 PROBLEM FOUND: Sessions started from a bare drive root rather than a project folder
   Details: docs/session-recovery.md#old-root-cwd-reference
-  Safety : These sessions are typically read-only recoverable. Diagnose is read-only and safe to run anytime.
+  Status : These sessions are typically read-only recoverable. Diagnose is read-only and safe to run anytime.
 
   No automatic repair for this state. See:
     docs/session-recovery.md#old-root-cwd-reference

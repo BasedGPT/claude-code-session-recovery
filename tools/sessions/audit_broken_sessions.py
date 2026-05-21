@@ -3,11 +3,15 @@ Diagnose Claude Desktop sessions by broken-state bucket.
 
 Complement to diagnose.py for power users who want per-session detail beyond
 what the summary counts show. Categorises every local_*.json in the AppData
-session-metadata directory into one of six buckets and reports counts plus
+session-metadata directory into one of seven buckets and reports counts plus
 details for the broken ones.
 
 Bucket order (evaluated in priority order):
   parse_error            -- JSON failed to parse
+  archived_no_cli        -- isArchived=True AND cliSessionId absent (would
+                            blank-pane if unarchived; surfaced separately
+                            so the count of truly-broken-but-hidden cases
+                            does not vanish into the archived bucket)
   archived               -- isArchived=True (Desktop hides these from history)
   no_cli_session_id      -- cliSessionId absent or empty
   cli_at_unexpected_slug -- cliSessionId set + JSONL exists, but not at the slug
@@ -64,6 +68,8 @@ def _classify(meta, jsonl_index):
     }
 
     if meta.get("isArchived"):
+        if not meta.get("cliSessionId"):
+            return "archived_no_cli", info
         return "archived", info
     if not meta.get("cliSessionId"):
         return "no_cli_session_id", info
@@ -87,6 +93,7 @@ def _audit(appdata_claude_dir, projects_dir):
     """Walk metadata dir, return {bucket: [(filename, info), ...]}."""
     results = {
         "parse_error":            [],
+        "archived_no_cli":        [],
         "archived":               [],
         "no_cli_session_id":      [],
         "cli_at_unexpected_slug": [],
@@ -127,6 +134,8 @@ def _print_report(results, quiet, limit):
         return
 
     for bucket, header in (
+        ("archived_no_cli",
+         "archived_no_cli -- isArchived AND cliSessionId absent (would blank-pane if unarchived)"),
         ("no_cli_session_id",
          "no_cli_session_id -- cliSessionId absent (Desktop cannot resume)"),
         ("cli_at_unexpected_slug",

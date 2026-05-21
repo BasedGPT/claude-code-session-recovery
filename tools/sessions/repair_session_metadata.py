@@ -168,7 +168,13 @@ def index_metadata(appdata_claude_dir):
             if cli:
                 by_cli[cli] = (f, data)
             else:
-                broken.append((f, data))
+                # Archived sessions are hidden from Desktop's picker, so
+                # repairing a missing cliSessionId on one has no user-visible
+                # effect. Skip them so the repair loop does not attempt
+                # timestamp-matching against the JSONL pool for entries the
+                # user deliberately archived.
+                if not data.get("isArchived"):
+                    broken.append((f, data))
     return by_cli, broken
 
 

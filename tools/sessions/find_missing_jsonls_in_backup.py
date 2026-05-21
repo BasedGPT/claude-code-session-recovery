@@ -104,7 +104,10 @@ def _find_missing(appdata_claude_dir, projects_dir):
 
 # Subdirectory names to skip during recursive default-location search.
 # These are large or irrelevant trees that would slow the walk significantly.
-_SKIP_DIRS = {"node_modules", ".git", "Photos", "Videos", "Music"}
+_SKIP_DIRS = {
+    "node_modules", ".git", "Photos", "Videos", "Music",
+    ".venv", "__pycache__", "build", "dist", ".tox",
+}
 
 # Default cloud-sync roots to probe when --backup is not given and BACKUP_ROOTS
 # is empty. Glob patterns are expanded at runtime.
@@ -281,6 +284,7 @@ def _probe_default_locations(dangling_sids, quiet=False):
         print("Searching {} ...".format(location_dir))
         count = _search_location_recursive(location_dir, dangling_sids, quiet=quiet)
         total_found += count
+        print("  {} match(es) found.".format(count))
 
     print()
     if total_found == 0:

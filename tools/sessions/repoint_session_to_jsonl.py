@@ -34,10 +34,15 @@ Caveats:
   - worktreePath is updated only when it matched the old cwd exactly.
   - The new cwd is read from the first cwd field in the JSONL transcript.
     If the transcript contains no cwd record, the session is skipped.
+  - If the JSONL's recorded cwd encodes to a slug other than the directory
+    the JSONL actually lives in, that cwd is itself stale (e.g. a junction
+    that has been removed). The session is skipped with WARN -- manual
+    intervention is required for these.
 
 Usage:
     python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id <hex>
     python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id <hex> --apply
+    python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id <hex> --summary
 """
 import argparse
 import glob
@@ -152,7 +157,7 @@ def _find_mismatches(appdata_claude_dir, projects_dir):
 # Planning
 # ---------------------------------------------------------------------------
 
-def _plan_changes(meta, old_cwd, new_cwd):
+def _plan_changes(meta, old_cwd, new_cwd, actual_slug_dir):
     """Return (new_meta_or_None, change_log).
 
     Returns (None, log) when new_cwd is unresolvable -- caller should skip.
@@ -162,8 +167,22 @@ def _plan_changes(meta, old_cwd, new_cwd):
             "SKIP: no cwd field found in JSONL transcript -- cannot determine correct cwd."
         ]
 
-    if _slug_encode(new_cwd) != _slug_encode(old_cwd):
-        pass  # expected -- this is the mismatch we are fixing
+    # Validate that the cwd read from the JSONL actually encodes to the
+    # directory where the JSONL lives. If it doesn't, the JSONL's recorded
+    # cwd is itself stale (e.g. a junction that has since been removed), and
+    # writing it would leave the metadata pointing at a path that doesn't
+    # resolve to the right slug either.
+    if _slug_encode(new_cwd) != actual_slug_dir:
+        return None, [
+            "WARN: cwd from JSONL ({!r}) encodes to slug {!r}, "
+            "which does not match the actual JSONL directory {!r}. "
+            "The JSONL transcript's recorded cwd is itself stale "
+            "(e.g. a junction that has been removed). "
+            "Cannot automatically determine the correct cwd -- "
+            "manual intervention required.".format(
+                new_cwd, _slug_encode(new_cwd), actual_slug_dir,
+            )
+        ]
 
     log = []
     new_meta = dict(meta)
@@ -218,6 +237,12 @@ def main():
         "--state",
         metavar="PATH", default=None,
         help="Fixture state directory for testing.",
+    )
+    ap.add_argument(
+        "--summary",
+        action="store_true",
+        help="One line per session instead of per-field detail. "
+             "Useful when the mismatch count is large.",
     )
     args = ap.parse_args()
 
@@ -278,14 +303,27 @@ def main():
         meta_name = os.path.basename(meta_path)
         sid = meta.get("cliSessionId", "(unknown)")
 
-        new_meta, log = _plan_changes(meta, old_cwd, new_cwd)
+        new_meta, log = _plan_changes(meta, old_cwd, new_cwd, actual_slug_dir)
 
-        print("  REPOINT {}".format(sid))
-        print("          file={}".format(meta_name))
-        print("          slug_dir={}".format(actual_slug_dir))
-        for line in log:
-            print("          {}".format(line))
-        print()
+        if args.summary:
+            if new_meta is None:
+                # Pick the most informative log line for the summary
+                msg = log[0] if log else "(no detail)"
+                # Truncate to keep the line readable
+                if len(msg) > 100:
+                    msg = msg[:97] + "..."
+                print("  SKIP    {} {} -- {}".format(sid, meta_name, msg))
+            else:
+                short_old = (old_cwd[:40] + "...") if len(old_cwd) > 43 else old_cwd
+                short_new = (new_cwd[:40] + "...") if new_cwd and len(new_cwd) > 43 else (new_cwd or "")
+                print("  REPOINT {} {} : {} -> {}".format(sid, meta_name, short_old, short_new))
+        else:
+            print("  REPOINT {}".format(sid))
+            print("          file={}".format(meta_name))
+            print("          slug_dir={}".format(actual_slug_dir))
+            for line in log:
+                print("          {}".format(line))
+            print()
 
         if new_meta is None:
             skipped += 1

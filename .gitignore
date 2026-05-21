@@ -7,3 +7,4 @@ tools/sessions/cwd-rewrite-backup/
 tools/worktrees/shrink-manifests/
 tools/_*.py
 tools/sessions/synth-out/
+LAST_SESSION_*.md

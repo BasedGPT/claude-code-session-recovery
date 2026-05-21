@@ -7,22 +7,34 @@
 
 Something broke somewhere with your sessions in Claude Desktop. Because I'm a bit special I've broken my Desktop sessions in lots of different ways. I made this to help you diagnose and hopefully fix it if something has gone wrong for you too.
 
-## Paste this into Claude Code to fix it
+## Fix it with Claude Code (recommended)
 
-If you want Claude Code to diagnose and repair your sessions for you, paste this:
+This runs best from a **Claude Code CLI session**, not from Claude Desktop. If you try it from Desktop, the tool will detect that and warn you.
+
+**Step 1 — open a CLI session**
+
+Open Windows Terminal, PowerShell, or cmd, then run:
+
+```
+claude
+```
+
+That starts Claude Code in your terminal.
+
+**Step 2 — paste this prompt**
 
 ```
 My Claude Code sessions are broken on Windows. Please help me fix them using https://github.com/BasedGPT/claude-code-session-recovery
 
-1. Clone the repo to a temp folder
+1. Clone the repo and cd into it: `git clone https://github.com/BasedGPT/claude-code-session-recovery` then `cd claude-code-session-recovery`
 2. Read AGENTS.md — it's written for AI assistants and explains how to use this repo safely
 3. Read docs/session-recovery.md to understand the symptoms and repair tools
 4. Run `python tools/diagnose.py` — it auto-detects all file paths from the environment, no configuration needed
-5. Read the output and run the repair command it recommends (dry-run first, then --apply)
+5. For each repair command: run the dry-run first, show me the full output, and wait for me to say "yes, apply" before adding --apply
 6. Tell me what was found and what was fixed
 ```
 
-## Quickstart
+## Fix it yourself (no AI needed)
 
 ```
 git clone https://github.com/BasedGPT/claude-code-session-recovery
@@ -30,7 +42,7 @@ cd claude-code-session-recovery
 python tools/diagnose.py
 ```
 
-Read the output. It prints what it found, the matched problem, and the exact repair command if one exists. The diagnostic is read-only — safe to run at any time.
+Read the output. It prints what it found, the matched problem, and the exact repair command. The diagnostic is read-only — safe to run at any time.
 
 ## Where to start
 

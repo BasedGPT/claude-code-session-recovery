@@ -1,4 +1,4 @@
-# Recovering deleted JSOLs
+# Recovering deleted JSONLs
 
 Claude Desktop prunes old transcript files, and they can also disappear through accidental deletion or a failed backup restore. A missing JSONL is a starting point for investigation, not a verdict. Work through the checklist below before concluding the conversation is gone.
 
@@ -31,20 +31,15 @@ Claude Desktop prunes old transcript files, and they can also disappear through 
 
    - OneDrive web → navigate to the backup folder → Version History
    - Dropbox web → navigate to the folder → click the clock icon
-   - iCloud Drive → check for a Recents or version history option in the web interface
+   - iCloud Drive → check for a Recents or version history option in the web interface *(macOS only)*
 
 4. **`%APPDATA%\Claude\local-agent-mode-sessions\<acct>\<org>\local_<sid>\`**
 
-   Each session has a directory here containing `audit.jsonl` — a per-session agent action log recording what tools fired and in what order. This does **not** contain conversation transcript content, but it confirms the session existed and what it did. One `local_<sid>/` directory per session, keyed by the Desktop session ID (not the `cliSessionId`). Useful for confirming timing and activity even when the transcript itself cannot be recovered.
+   Each session has a directory here containing `audit.jsonl` — a per-session agent action log recording what tools fired and in what order. This does **not** contain conversation transcript content, but it confirms the session existed and what it did. One `local_<sid>/` directory per session, keyed by the Desktop session ID — the UUID in the metadata filename (`local_<uuid>.json`), separate from the `cliSessionId` field inside it. Useful for confirming timing and activity even when the transcript content is not available elsewhere.
 
 5. **FTS5 transcript index at `~\.claude\transcript-index\index.db`**
 
-   Partial recovery path. If the session's subagent compactions were indexed, `agent-acompact-*` records may contain conversation summaries. In one documented incident, this recovered 548 messages across 2 of 9 lost sessions. Querying it requires SQL against an FTS5 database — more technical than the other options, but worth attempting for important sessions.
-
-   ```powershell
-   # Check whether the index exists
-   Test-Path "$env:USERPROFILE\.claude\transcript-index\index.db"
-   ```
+   Partial recovery path. If the session's subagent compactions were indexed, `agent-acompact-*` records may contain conversation summaries. In one documented incident, this recovered 548 messages across 2 of 9 lost sessions. Querying the index requires SQL against an FTS5 database — more technical than the other options. See the "If nothing is found" section below if you want to pursue this path.
 
 6. **Recycle Bin**
 
@@ -60,7 +55,7 @@ Claude Desktop prunes old transcript files, and they can also disappear through 
 
 ## Other sources
 
-The list above covers the most common places. Other sources worth checking include Time Machine (macOS), Restic, Borg, or Duplicati snapshots, organisation backup tools such as CrashPlan or Veeam Endpoint Backup, and network drives that mirror your home directory. Look for any tool that snapshots `%USERPROFILE%\.claude\projects\<slug>\<uuid>.jsonl`.
+The list above covers the most common places. Other sources worth checking include Time Machine (macOS only), Restic, Borg, or Duplicity snapshots, organisation backup tools such as CrashPlan or Veeam Endpoint Backup, and network drives that mirror your home directory. Look for any tool that snapshots `%USERPROFILE%\.claude\projects\<slug>\<uuid>.jsonl`.
 
 ---
 
@@ -86,4 +81,4 @@ Open that file, read `cwd`, and apply the substitution. The resulting string is 
 
 ## If nothing is found
 
-Partial recovery via the FTS5 transcript index is a separate, more involved path not covered here — it involves SQL queries and manual reconstruction from compaction summaries. If you have worked through the checklist above and found nothing, open an issue on this repository with the output of `python tools/diagnose.py` and describe what backups you checked.
+Partial recovery via the FTS5 transcript index (item 5 above) is the next path to attempt — it involves SQL queries against `~\.claude\transcript-index\index.db` and manual reconstruction from compaction summaries. This is more involved than the checklist above and not documented here. If you want help with it, or if you have worked through the full checklist and found nothing, open an issue on this repository with the output of `python tools/diagnose.py` and describe what backups you checked.

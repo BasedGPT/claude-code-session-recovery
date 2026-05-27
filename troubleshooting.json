@@ -76,6 +76,20 @@
     }
   },
   {
+    "id": "truncated-jsonl",
+    "domain": "session",
+    "problem": "Session opens but its conversation history looks shorter than expected",
+    "what_to_do": "Run tools/diagnose.py first. It will count sessions where the JSONL message count is lower than the metadata's completedTurns field.",
+    "details": "docs/session-recovery.md#truncated-jsonl",
+    "safety": "No mutation available yet. Check cloud sync version history or backup copies for the full JSONL. Diagnose is read-only and safe to run anytime.",
+    "mutator": null,
+    "match": {
+      "any": [
+        {"snapshot.truncated_jsonl_count": {">": 0}}
+      ]
+    }
+  },
+  {
     "id": "orphan-jsonl-no-metadata",
     "domain": "session",
     "problem": "Sessions are absent from the session list even though their transcript files exist on disk",

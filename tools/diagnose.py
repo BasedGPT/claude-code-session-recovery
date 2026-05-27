@@ -96,6 +96,33 @@ def _slug_encode(cwd):
     return out
 
 
+def _count_jsonl_assistant_lines(path, stop_at=None):
+    """Count {"role": "assistant"} lines in a JSONL file.
+
+    stop_at: if given, return early once this threshold is reached — the caller
+    can treat a return value >= stop_at as "not truncated" without reading the
+    whole file. Keeps large sessions fast.
+    """
+    count = 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or '"assistant"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if obj.get("role") == "assistant":
+                        count += 1
+                        if stop_at is not None and count >= stop_at:
+                            return count
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+    except OSError:
+        return 0
+    return count
+
+
 def _cwd_type(cwd):
     """Classify a cwd path as junction, canonical, bare_root, or other."""
     if not cwd:
@@ -214,6 +241,24 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         if actual_slug_dir != expected_slug:
             cwd_slug_mismatch_count += 1
 
+    # truncated_jsonl_count: sessions where the JSONL exists and metadata records
+    # a completedTurns value, but the file contains fewer assistant-role lines
+    # than that count. A truncated session looks intact from the outside — the
+    # JSONL is present and the metadata is linked — but opens with missing
+    # earlier messages. Skipped in fixture mode because fixture JSONLs are stubs.
+    truncated_jsonl_count = 0
+    if not fixture_mode:
+        for _, d in meta_files:
+            cli = d.get("cliSessionId")
+            completed_turns = d.get("completedTurns")
+            if not cli or not completed_turns or cli not in jsonl_index:
+                continue
+            if completed_turns <= 0:
+                continue
+            actual = _count_jsonl_assistant_lines(jsonl_index[cli], stop_at=completed_turns)
+            if actual < completed_turns:
+                truncated_jsonl_count += 1
+
     # Schema version: "recognised" if we found metadata files with the expected
     # structure (have sessionId field); "unrecognised" otherwise.
     schema_version = "unrecognised"
@@ -246,6 +291,7 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         "cwd_junction_mismatch_count": junction_mismatch_count,
         "jsonl_orphan_count": jsonl_orphan_count,
         "cwd_slug_mismatch_count": cwd_slug_mismatch_count,
+        "truncated_jsonl_count": truncated_jsonl_count,
         "cwd_prefix_types": cwd_prefix_types,
         "jsonl_count": len(jsonl_index),
         "schema_version": schema_version,
@@ -409,6 +455,7 @@ def make_diagnosis_id(snapshot):
         "metadata_duplicate_cli_count",
         "cwd_junction_mismatch_count",
         "cwd_slug_mismatch_count",
+        "truncated_jsonl_count",
         "jsonl_orphan_count",
         "cwd_prefix_types",
         "jsonl_count",
@@ -493,6 +540,11 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None):
         f"  {snapshot['metadata_missing_cli_count']} missing)"
     )
     lines.append(f"JSONL files  : {snapshot['jsonl_count']}")
+    if snapshot.get("truncated_jsonl_count", 0) > 0:
+        lines.append(
+            f"Truncated    : {snapshot['truncated_jsonl_count']} session(s) have fewer"
+            " messages than completedTurns records (history appears cut off)"
+        )
     lines.append("")
 
     if snapshot.get("desktop_running"):

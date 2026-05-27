@@ -113,7 +113,7 @@ def _count_jsonl_assistant_lines(path, stop_at=None):
                     continue
                 try:
                     obj = json.loads(line)
-                    if obj.get("role") == "assistant":
+                    if obj.get("type") == "assistant":
                         count += 1
                         if stop_at is not None and count >= stop_at:
                             return count
@@ -658,7 +658,9 @@ def main():
             appdata_claude_dir = os.path.expanduser("~/.config/Claude")
             projects_dir = os.path.expanduser("~/.claude/projects")
         else:
-            appdata_claude_dir = os.path.join(os.environ.get("APPDATA", ""), "Claude")
+            appdata_claude_dir = os.path.join(
+                os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
+            )
             projects_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 
     snapshot = build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=args.state is not None)

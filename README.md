@@ -107,6 +107,24 @@ python tools/sessions/backup_claude_state.py --dry-run   # see what would be zip
 
 Running while Desktop is open is fine — all source operations are read-only.
 
+**Before restoring from a backup zip:** set `"cleanupPeriodDays": 36500` in `~/.claude/settings.json` first. The backup preserves original file timestamps, and Claude Code's cleanup deletes JSONLs by filesystem mtime — not by message date. Any JSONL older than 30 days by mtime will be re-deleted on next launch if you restore without this step. See [docs/session-recovery.md](docs/session-recovery.md#cli-points-missing-jsonl) for the full restore sequence.
+
+---
+
+### Set `cleanupPeriodDays` high
+
+In `~/.claude/settings.json`:
+
+```json
+{
+  "cleanupPeriodDays": 36500
+}
+```
+
+This tells Claude Code to keep transcripts for approximately 100 years. The default is 30 days, which is aggressive if you want to preserve long-running project history.
+
+**Caveat:** three documented paths bypass this setting regardless of its value — SDK subagent sessions (`settingSources: []`), CLI invocations with `--setting-sources local`, and sessions where `cleanupPeriodDays` resolves to `0`. The backup covers you when the setting is bypassed.
+
 ---
 
 ### Worktree lifecycle: `tools/worktrees/`

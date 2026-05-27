@@ -1,5 +1,5 @@
 """
-Weekly snapshot of Claude Code's three stateful data layers.
+Daily snapshot of Claude Code's three stateful data layers.
 
 Takes a compressed backup of:
   1. Desktop metadata  %APPDATA%/Claude/claude-code-sessions/<acct>/<org>/
@@ -7,7 +7,7 @@ Takes a compressed backup of:
   3. FTS5 index        <TRANSCRIPT_DB> (if configured)
 
 Each is written to a dated zip (or copied DB) under BACKUPS_ROOT. Retains
-the last KEEP_WEEKS weekly snapshots; older ones are sent to the Recycle Bin.
+the last KEEP_DAYS daily snapshots; older ones are sent to the Recycle Bin.
 
 Safe to run while Claude Desktop is open -- all source operations are read-only.
 
@@ -17,16 +17,16 @@ Files read:
   - TRANSCRIPT_DB path if configured
 
 Files written:
-  - <BACKUPS_ROOT>/desktop-metadata/YYYY-WNN.zip
-  - <BACKUPS_ROOT>/jsonl-projects/YYYY-WNN.zip
-  - <BACKUPS_ROOT>/transcript-index/YYYY-WNN/transcripts.db  (if configured)
+  - <BACKUPS_ROOT>/desktop-metadata/YYYY-MM-DD.zip
+  - <BACKUPS_ROOT>/jsonl-projects/YYYY-MM-DD.zip
+  - <BACKUPS_ROOT>/transcript-index/YYYY-MM-DD/transcripts.db  (if configured)
   - <BACKUPS_ROOT>/backup_log/YYYY-MM-DD.log
 
-Task Scheduler setup (run weekly):
+Task Scheduler setup (run daily):
   Program  : py
   Arguments: -3 "<absolute-path-to-this-script>"
   Start In : <your project root>
-  Trigger  : Weekly, Sunday 06:00 AM
+  Trigger  : Daily, 06:00 AM
   Run as   : your user account
 
 Usage:
@@ -80,8 +80,8 @@ TRANSCRIPT_DB = None  # e.g. r"C:\path\to\.transcript-index\transcripts.db"
 # Timezone for the weekly stamp and log timestamps.
 TZ = ZoneInfo("Australia/Melbourne")
 
-# How many weekly snapshots to keep before pruning.
-KEEP_WEEKS = 12
+# How many daily snapshots to keep before pruning.
+KEEP_DAYS = 30
 
 # --- End configuration ---
 
@@ -95,8 +95,8 @@ SESSIONS_BASE = os.path.join(
     "Claude", "claude-code-sessions",
 )
 
-# Matches YYYY-WNN and YYYY-WNN.zip -- used to identify weekly snapshot entries.
-WEEK_RE = re.compile(r"^\d{4}-W\d{2}(\.zip)?$")
+# Matches YYYY-MM-DD and YYYY-MM-DD.zip -- used to identify daily snapshot entries.
+DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(\.zip)?$")
 
 
 class _SHFILEOPSTRUCT(ctypes.Structure):
@@ -215,11 +215,11 @@ def _backup_sqlite(src_db, dest_dir, log, dry_run):
 
 
 def _prune_snapshots(dest_dir, log, dry_run):
-    """Keep KEEP_WEEKS most recent weekly snapshots; recycle the rest."""
+    """Keep KEEP_DAYS most recent daily snapshots; recycle the rest."""
     if not os.path.isdir(dest_dir):
         return 0
-    entries = sorted(e for e in os.listdir(dest_dir) if WEEK_RE.match(e))
-    to_prune = entries[:-KEEP_WEEKS] if len(entries) > KEEP_WEEKS else []
+    entries = sorted(e for e in os.listdir(dest_dir) if DAY_RE.match(e))
+    to_prune = entries[:-KEEP_DAYS] if len(entries) > KEEP_DAYS else []
     for name in to_prune:
         full = os.path.join(dest_dir, name)
         log("  Pruning: {}".format(full))
@@ -230,7 +230,7 @@ def _prune_snapshots(dest_dir, log, dry_run):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Weekly snapshot of Claude Code metadata, transcripts, and index"
+        description="Daily snapshot of Claude Code metadata, transcripts, and index"
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="Print planned actions without writing anything")
@@ -258,7 +258,7 @@ def main():
         print(line, file=log_fh, flush=True)
 
     try:
-        log("=== backup_claude_state  {}  week={} ===".format(now.isoformat(), week_stamp))
+        log("=== backup_claude_state  {}  day={} ===".format(now.isoformat(), day_stamp))
         if DRY_RUN:
             log("Mode: DRY-RUN -- no files will be written")
         log("")
@@ -281,7 +281,7 @@ def main():
         log("--- [1/3] Desktop metadata ---")
         try:
             meta_dir = _discover_meta_dir()
-            dest_zip = os.path.join(DEST_METADATA, "{}.zip".format(week_stamp))
+            dest_zip = os.path.join(DEST_METADATA, "{}.zip".format(day_stamp))
             total_bytes += _backup_zip(meta_dir, dest_zip, log, DRY_RUN)
             pruned = _prune_snapshots(DEST_METADATA, log, DRY_RUN)
             if pruned:
@@ -294,7 +294,7 @@ def main():
 
         log("--- [2/3] JSONL transcripts ---")
         try:
-            dest_zip = os.path.join(DEST_JSONL, "{}.zip".format(week_stamp))
+            dest_zip = os.path.join(DEST_JSONL, "{}.zip".format(day_stamp))
             total_bytes += _backup_zip(PROJECTS_ROOT, dest_zip, log, DRY_RUN)
             pruned = _prune_snapshots(DEST_JSONL, log, DRY_RUN)
             if pruned:
@@ -311,7 +311,7 @@ def main():
             done += 1
         else:
             try:
-                dest_dir = os.path.join(DEST_TRANSCRIPT, week_stamp)
+                dest_dir = os.path.join(DEST_TRANSCRIPT, day_stamp)
                 total_bytes += _backup_sqlite(TRANSCRIPT_DB, dest_dir, log, DRY_RUN)
                 pruned = _prune_snapshots(DEST_TRANSCRIPT, log, DRY_RUN)
                 if pruned:

@@ -74,4 +74,73 @@ Run `python tools/diagnose.py` first — it identifies your specific problem and
 
 ---
 
-Requirements: Python 3.11+, Windows 11. No dependencies outside the standard library.
+## Prevention — stop it happening again
+
+The tools above repair problems after they occur. These two run proactively, so you have a clean recovery path if something goes wrong next time.
+
+### Weekly backup: `tools/sessions/backup_claude_state.py`
+
+Takes a compressed snapshot of all three data layers that Claude Code depends on:
+
+- **Desktop metadata** — `%APPDATA%\Claude\claude-code-sessions\` (the session index Desktop reads on startup)
+- **JSONL transcripts** — `~\.claude\projects\` (the actual conversation history)
+- **FTS5 transcript index** — if you have one configured
+
+Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. Old snapshots are automatically sent to the Recycle Bin — the default keeps the last 5 weekly backups.
+
+**Run it manually:**
+
+```
+python tools/sessions/backup_claude_state.py
+python tools/sessions/backup_claude_state.py --dry-run   # see what would be zipped
+```
+
+**Schedule it weekly (Task Scheduler):**
+
+| Field | Value |
+|---|---|
+| Program | `py` |
+| Arguments | `-3 "C:\path\to\tools\sessions\backup_claude_state.py"` |
+| Start In | your repo root |
+| Trigger | Weekly, Sunday 6:00 AM |
+| Run As | your user account |
+
+Running while Desktop is open is fine — all source operations are read-only.
+
+---
+
+### Worktree lifecycle: `tools/worktrees/`
+
+If you use Claude Code's worktree feature, removing a worktree the normal way (`git worktree remove`) permanently destroys any session data that was never committed — including `.env` files, scratch notes, and anything not tracked by git. It also orphans the Desktop session entries, which then appear in your session list with no content.
+
+This suite manages the lifecycle safely:
+
+**`worktree_shrink.py`** — instead of deleting a merged worktree, shrinks it from a full working tree (~45 MB) down to a bare stub (~2 KB). The branch history and session data remain reachable; the disk footprint disappears. Runs a 9-step pipeline with a manifest and quarantine folder so a partial failure is always recoverable.
+
+```
+python tools/worktrees/worktree_shrink.py <name>           # dry-run
+python tools/worktrees/worktree_shrink.py <name> --apply   # shrink (branch must be merged)
+python tools/worktrees/worktree_shrink.py --queue --apply  # process all marked-for-shrink worktrees
+```
+
+**`backfill_recovery_stubs.py`** — if you already have bare stubs from earlier recovery work or manual removal, this quiets them. Without it, every bare stub reports a "large number of uncommitted changes" banner in Claude Code at session start.
+
+```
+python tools/worktrees/backfill_recovery_stubs.py           # dry-run
+python tools/worktrees/backfill_recovery_stubs.py --apply
+```
+
+**`worktree_resume_rule.py`** — a Claude Code `SessionStart` hook. When you open a worktree that was queued for shrinking (has a `.shrink-when-safe` marker), it removes the marker so the shrink queue skips it. Keeps "continue working on this branch" as a first-class action — the human session always wins.
+
+```yaml
+# .claude/settings.json
+hooks:
+  SessionStart:
+    - python /absolute/path/to/tools/worktrees/worktree_resume_rule.py
+```
+
+The full lifecycle policy — what "safe to shrink" means, how the queue works, what the quarantine folder is for — is in [docs/worktree-lifecycle.md](docs/worktree-lifecycle.md).
+
+---
+
+Requirements: Python 3.11+, Windows 11 (macOS supported via `--state`; native macOS paths tracked in [#4](https://github.com/BasedGPT/claude-code-session-recovery/issues/4)). No dependencies outside the standard library.

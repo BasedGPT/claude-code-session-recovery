@@ -39,6 +39,7 @@ Restoring from VSS -- read this first:
 
 import argparse
 import atexit
+import csv
 import io
 import os
 import re
@@ -60,7 +61,13 @@ from lock_utils import acquire_lock, release_lock  # noqa: E402
 PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 
 # Lock file -- prevents concurrent runs.
-LOCK_FILE = os.path.join(TOOL_DIR, "restore_from_vss.lock")
+LOCK_FILE = os.path.join(
+    os.environ.get("TEMP", os.path.expanduser("~")),
+    "restore_from_vss.lock",
+)
+
+# Original live files overwritten by --apply are copied here first.
+BACKUP_DIR = os.path.join(TOOL_DIR, "restore-backup")
 
 # --- End configuration ---
 
@@ -84,22 +91,29 @@ def _is_admin():
 
 
 def _check_vss_available():
-    """
-    Return True if vssadmin reports shadow storage on any volume.
-    Does not filter by drive letter -- shadow copies on the relevant volume
-    are identified later by whether they contain the expected path.
-    """
     try:
         result = subprocess.run(
             ["vssadmin", "list", "shadowstorage"],
             capture_output=True, text=True, timeout=30,
         )
-        output = (result.stdout + result.stderr).lower()
-        # vssadmin exits 0 even when nothing is found; look for the no-items phrase
-        if "no items found" in output and result.returncode != 0:
+        if result.returncode != 0:
             return False
-        # If vssadmin ran at all and didn't error out, VSS is available
-        return result.returncode == 0 or "shadow copy storage" in output
+        output = (result.stdout + result.stderr).lower()
+        if "no items found" in output:
+            return False
+        return "shadow copy storage" in output
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+def _desktop_running():
+    """Return True if Claude Desktop is currently present in tasklist."""
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq claude.exe", "/NH"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return "claude.exe" in result.stdout.lower()
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
 
@@ -108,7 +122,7 @@ def _check_vss_available():
 # Shadow copy enumeration
 # ---------------------------------------------------------------------------
 
-def _enumerate_shadow_copies():
+def _enumerate_shadow_copies(projects_dir):
     """
     Return a list of dicts [{device, install_date}] for all available shadow copies.
 
@@ -119,16 +133,20 @@ def _enumerate_shadow_copies():
     Returns [] when no shadow copies exist or both methods fail.
     """
     copies = []
+    drive = os.path.splitdrive(projects_dir)[0].upper()
 
     # Primary: PowerShell Get-CimInstance with explicit s-format date string.
-    # Single quotes only -- avoids subprocess quoting collisions with double quotes.
     ps_cmd = (
+        "param([string]$DL) "
+        "$vol = (Get-CimInstance Win32_Volume -Filter \"DriveLetter = '$DL'\").DeviceID; "
         "Get-CimInstance Win32_ShadowCopy "
+        "| Where-Object { $_.VolumeName -eq $vol } "
         "| ForEach-Object { $_.DeviceObject + '|' + $_.InstallDate.ToString('s') }"
     )
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-Command", ps_cmd, "-DL", drive],
             capture_output=True, text=True, timeout=30,
         )
         for line in result.stdout.splitlines():
@@ -147,23 +165,49 @@ def _enumerate_shadow_copies():
     # Fallback: wmic shadowcopy (available on all Windows editions).
     try:
         result = subprocess.run(
-            ["wmic", "shadowcopy", "get", "DeviceObject,InstallDate", "/FORMAT:CSV"],
+            ["wmic", "shadowcopy", "get",
+             "DeviceObject,InstallDate,VolumeName", "/FORMAT:CSV"],
             capture_output=True, text=True, timeout=30,
         )
-        for line in result.stdout.splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            # CSV format: Node,DeviceObject,InstallDate
-            if len(parts) < 3:
-                continue
-            device = parts[1]
-            install_date_wmi = parts[2]
+        unfiltered = []
+        for row in csv.DictReader(io.StringIO(result.stdout.lstrip("\ufeff"))):
+            device = (row.get("DeviceObject") or "").strip()
+            install_date_wmi = (row.get("InstallDate") or "").strip()
             if not device.startswith("\\\\?\\"):
                 continue
             m = _WMI_DT_RE.match(install_date_wmi)
             install_date = (
                 "{}-{}-{}T{}:{}:{}".format(*m.groups()) if m else install_date_wmi
             )
-            copies.append({"device": device, "install_date": install_date})
+            unfiltered.append({
+                "device": device,
+                "install_date": install_date,
+                "volume_name": (row.get("VolumeName") or "").strip(),
+            })
+
+        volume_cmd = (
+            "param([string]$DL) "
+            "(Get-CimInstance Win32_Volume -Filter \"DriveLetter = '$DL'\").DeviceID"
+        )
+        volume_result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-Command", volume_cmd, "-DL", drive],
+            capture_output=True, text=True, timeout=30,
+        )
+        expected_volume = volume_result.stdout.strip()
+        if volume_result.returncode == 0 and expected_volume:
+            copies = [
+                {"device": item["device"], "install_date": item["install_date"]}
+                for item in unfiltered
+                if item["volume_name"] == expected_volume
+            ]
+        else:
+            print("  WARNING: unable to filter wmic shadow copies by volume; "
+                  "using all local-drive shadow copies.", file=sys.stderr)
+            copies = [
+                {"device": item["device"], "install_date": item["install_date"]}
+                for item in unfiltered
+            ]
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
@@ -253,7 +297,8 @@ def _build_candidates(shadow_copies, projects_dir):
     shadow_size > live_size (or the live file is absent).
 
     Returns a list of candidate dicts sorted by rel_path, each containing:
-      rel_path, live_path, live_size, shadow_path, shadow_size, install_date, device
+      rel_path, live_path, live_exists, live_size, shadow_path, shadow_size,
+      install_date, device
     """
     best = {}  # rel_path -> best candidate so far
 
@@ -268,11 +313,13 @@ def _build_candidates(shadow_copies, projects_dir):
     candidates = []
     for rel, item in sorted(best.items()):
         live_path = os.path.join(projects_dir, rel)
-        live_size = os.path.getsize(live_path) if os.path.isfile(live_path) else 0
+        live_exists = os.path.isfile(live_path)
+        live_size = os.path.getsize(live_path) if live_exists else 0
         if item["shadow_size"] <= live_size:
             continue  # live copy is already at least as complete
         candidate = dict(item)
         candidate["live_path"] = live_path
+        candidate["live_exists"] = live_exists
         candidate["live_size"] = live_size
         candidates.append(candidate)
 
@@ -284,8 +331,6 @@ def _build_candidates(shadow_copies, projects_dir):
 # ---------------------------------------------------------------------------
 
 def _fmt_size(n):
-    if n == 0:
-        return "(missing)"
     if n < 1024:
         return "{:,} B".format(n)
     if n < 1024 * 1024:
@@ -321,11 +366,24 @@ def _print_candidates_table(candidates):
         path_display = c["rel_path"]
         if len(path_display) > col_path:
             path_display = "..." + path_display[-(col_path - 3):]
+        live_str = "(missing)" if not c["live_exists"] else _fmt_size(c["live_size"])
         print("  {:<{d}}  {:<{p}}  {:>{s}}  {:>{s}}".format(
             c["install_date"], path_display,
-            _fmt_size(c["shadow_size"]), _fmt_size(c["live_size"]),
+            _fmt_size(c["shadow_size"]), live_str,
             d=col_date, p=col_path, s=col_sz,
         ))
+
+
+def _first_bytes_match(left_path, right_path, byte_count):
+    """Compare exactly byte_count leading bytes in two files."""
+    remaining = byte_count
+    with open(left_path, "rb") as left, open(right_path, "rb") as right:
+        while remaining:
+            chunk_size = min(1024 * 1024, remaining)
+            if left.read(chunk_size) != right.read(chunk_size):
+                return False
+            remaining -= chunk_size
+    return True
 
 
 def _print_reminders(dry_run):
@@ -406,12 +464,17 @@ def main():
         print("    py -3 tools/sessions/restore_from_vss.py", file=sys.stderr)
         sys.exit(1)
 
+    projects_dir_arg = args.projects_dir if args.projects_dir else PROJECTS_DIR
+    drive = os.path.splitdrive(projects_dir_arg)[0]
+    if not re.fullmatch(r"[A-Za-z]:", drive or ""):
+        print(r"ERROR: projects_dir must be on a local lettered drive (e.g. C:\...).",
+              file=sys.stderr)
+        print("  VSS restore does not support UNC or relative paths.", file=sys.stderr)
+        sys.exit(1)
+    projects_dir = os.path.abspath(projects_dir_arg)
+
     acquire_lock(LOCK_FILE, "restore_from_vss")
     atexit.register(release_lock, LOCK_FILE)
-
-    projects_dir = (
-        os.path.abspath(args.projects_dir) if args.projects_dir else PROJECTS_DIR
-    )
 
     mode_label = "DRY-RUN -- no files will be written" if DRY_RUN else "APPLY"
     print("=== restore_from_vss  ({}) ===".format(mode_label))
@@ -430,7 +493,7 @@ def main():
 
     # [2/3] Enumerate shadow copies.
     print("--- [2/3] Enumerating shadow copies ---")
-    shadow_copies = _enumerate_shadow_copies()
+    shadow_copies = _enumerate_shadow_copies(projects_dir)
     if not shadow_copies:
         print("  No shadow copies found.")
         print("  Shadow copies must be created before files can be restored.")
@@ -457,11 +520,21 @@ def main():
         _print_reminders(dry_run=True)
         sys.exit(0)
 
+    if _desktop_running():
+        print("ERROR: Claude Desktop is running. Quit it fully (window and tray) before",
+              file=sys.stderr)
+        print("restoring. Desktop holds session state in memory and will overwrite restored",
+              file=sys.stderr)
+        print("files on its next flush.", file=sys.stderr)
+        print('  Verify with: tasklist /FI "IMAGENAME eq claude.exe"', file=sys.stderr)
+        sys.exit(1)
+
     # Apply: copy files, preserving mtime via shutil.copy2.
     print()
     print("Restoring {} file(s) ...".format(len(candidates)))
     restored = 0
     skipped = 0
+    diverged = 0
     failed = 0
 
     for c in candidates:
@@ -469,15 +542,31 @@ def main():
         shadow_path = c["shadow_path"]
 
         # Re-check live size -- state may have changed since the scan.
-        current_live_size = (
-            os.path.getsize(live_path) if os.path.isfile(live_path) else 0
-        )
+        current_live_exists = os.path.isfile(live_path)
+        current_live_size = os.path.getsize(live_path) if current_live_exists else 0
         if c["shadow_size"] <= current_live_size:
             print("  SKIP  {} (live copy grew since scan)".format(c["rel_path"]))
             skipped += 1
             continue
 
         try:
+            if current_live_exists and not _first_bytes_match(
+                live_path, shadow_path, current_live_size
+            ):
+                print("  SKIP (diverged)  {}".format(c["rel_path"]))
+                diverged += 1
+                continue
+
+            if current_live_exists:
+                backup_path = os.path.join(BACKUP_DIR, c["rel_path"])
+                os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+                shutil.copy2(live_path, backup_path)
+                if (
+                    os.path.getsize(backup_path) != current_live_size
+                    or not _first_bytes_match(live_path, backup_path, current_live_size)
+                ):
+                    raise OSError("backup verification failed")
+
             os.makedirs(os.path.dirname(live_path), exist_ok=True)
             shutil.copy2(shadow_path, live_path)
             print("  OK    {}  ({} from {})".format(
@@ -489,7 +578,9 @@ def main():
             failed += 1
 
     print()
-    print("Restored: {}  Skipped: {}  Failed: {}".format(restored, skipped, failed))
+    print("Restored: {}  Skipped: {}  Diverged: {}  Failed: {}  Backups: restore-backup/".format(
+        restored, skipped, diverged, failed,
+    ))
     _print_reminders(dry_run=False)
 
     if failed:

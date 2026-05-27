@@ -61,6 +61,18 @@ PROBLEM FOUND: Session is in the session list but its conversation history is mi
 
 `diagnose.py` will also print how many sessions are in this state.
 
+**Before restoring from backup — mtime interaction with cleanup.**
+
+Claude Code's cleanup deletes JSONLs based on filesystem mtime, not the timestamp of the last message. Backup zips preserve original mtimes. If you extract a backup while `cleanupPeriodDays` is at its default (30 days), any JSONL with an mtime older than 30 days will be re-deleted on the next Desktop launch — the restore appears to work, then the files vanish in the next session.
+
+Before extracting any backup:
+1. Open `~/.claude/settings.json` and set `"cleanupPeriodDays": 36500`
+2. Extract the backup zip
+3. Run `synth_session_metadata.py` (see [Sessions missing from Desktop session list](#orphan-jsonl-no-metadata)) to make the restored transcripts visible
+4. Revert `cleanupPeriodDays` to your preferred value once sessions are recovered
+
+This applies to any restore method that preserves original file timestamps — the backup zip from `backup_claude_state.py`, manual extraction, or platform snapshot tools (Windows VSS, macOS Time Machine).
+
 **Recovery options:**
 
 - `find_missing_jsonls_in_backup.py` searches a backup directory you specify for the missing transcript by session ID. Point it at any external backup you maintain.

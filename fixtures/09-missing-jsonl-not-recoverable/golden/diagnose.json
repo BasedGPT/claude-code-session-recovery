@@ -1,5 +1,5 @@
 {
-  "diagnosis_id": "35952a63",
+  "diagnosis_id": "b8e3c866",
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
@@ -29,6 +29,7 @@
     "cwd_junction_mismatch_count": 0,
     "jsonl_orphan_count": 0,
     "cwd_slug_mismatch_count": 0,
+    "truncated_jsonl_count": 0,
     "cwd_prefix_types": {
       "junction": 0,
       "canonical": 0,

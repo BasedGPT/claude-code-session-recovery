@@ -1,6 +1,6 @@
 DIAGNOSE -- Claude Code Desktop Session Recovery Tools
 ------------------------------------------------------------
-Diagnosis ID : ab580c0c
+Diagnosis ID : 49cacff4
 Metadata     : 3 files  (3 with cliSessionId,  0 missing)
 JSONL files  : 0
 

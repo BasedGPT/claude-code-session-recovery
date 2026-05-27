@@ -31,6 +31,7 @@ import argparse
 import glob
 import json
 import os
+import platform
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -47,12 +48,27 @@ except ImportError as exc:
 
 # --- Configuration ---
 # Used when --state is not supplied (live mode).
-# PROJECTS_DIR: where JSONL transcripts live (typically ~/.claude/projects).
-PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
-# APPDATA_CLAUDE_DIR: parent of the claude-code-sessions directory.
-APPDATA_CLAUDE_DIR = os.path.join(
-    os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
-)
+
+def _default_paths():
+    """Return (appdata_claude_dir, projects_dir) for the current platform."""
+    _sys = platform.system()
+    if _sys == "Darwin":
+        return (
+            os.path.expanduser("~/Library/Application Support/Claude"),
+            os.path.expanduser("~/.claude/projects"),
+        )
+    if _sys == "Linux":
+        return (
+            os.path.expanduser("~/.config/Claude"),
+            os.path.expanduser("~/.claude/projects"),
+        )
+    return (
+        os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"),
+        os.path.join(os.path.expanduser("~"), ".claude", "projects"),
+    )
+
+
+APPDATA_CLAUDE_DIR, PROJECTS_DIR = _default_paths()
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKUP_DIR = os.path.join(TOOL_DIR, "repair-backup")

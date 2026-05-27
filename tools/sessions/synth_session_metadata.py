@@ -38,6 +38,7 @@ import argparse
 import glob
 import json
 import os
+import platform
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -52,10 +53,27 @@ except ImportError as exc:
     sys.exit(1)
 
 # --- Configuration ---
-APPDATA_CLAUDE_DIR = os.path.join(
-    os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
-)
-PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+
+def _default_paths():
+    """Return (appdata_claude_dir, projects_dir) for the current platform."""
+    _sys = platform.system()
+    if _sys == "Darwin":
+        return (
+            os.path.expanduser("~/Library/Application Support/Claude"),
+            os.path.expanduser("~/.claude/projects"),
+        )
+    if _sys == "Linux":
+        return (
+            os.path.expanduser("~/.config/Claude"),
+            os.path.expanduser("~/.claude/projects"),
+        )
+    return (
+        os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"),
+        os.path.join(os.path.expanduser("~"), ".claude", "projects"),
+    )
+
+
+APPDATA_CLAUDE_DIR, PROJECTS_DIR = _default_paths()
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(TOOL_DIR, "synth-out")

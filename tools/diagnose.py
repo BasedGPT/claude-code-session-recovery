@@ -25,6 +25,7 @@ import glob
 import hashlib
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -649,9 +650,16 @@ def main():
         appdata_claude_dir = os.path.join(state_abs, "appdata", "Claude")
         projects_dir = os.path.join(state_abs, "projects")
     else:
-        appdata_dir = os.environ.get("APPDATA", "")
-        appdata_claude_dir = os.path.join(appdata_dir, "Claude")
-        projects_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+        _sys = platform.system()
+        if _sys == "Darwin":
+            appdata_claude_dir = os.path.expanduser("~/Library/Application Support/Claude")
+            projects_dir = os.path.expanduser("~/.claude/projects")
+        elif _sys == "Linux":
+            appdata_claude_dir = os.path.expanduser("~/.config/Claude")
+            projects_dir = os.path.expanduser("~/.claude/projects")
+        else:
+            appdata_claude_dir = os.path.join(os.environ.get("APPDATA", ""), "Claude")
+            projects_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 
     snapshot = build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=args.state is not None)
     diagnosis_id = make_diagnosis_id(snapshot)

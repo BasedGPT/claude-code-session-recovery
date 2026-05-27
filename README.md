@@ -86,7 +86,7 @@ Takes a compressed snapshot of all three data layers that Claude Code depends on
 - **JSONL transcripts** — `~\.claude\projects\` (the actual conversation history)
 - **FTS5 transcript index** — if you have one configured
 
-Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. Old snapshots are automatically sent to the Recycle Bin — the default keeps the last 5 weekly backups.
+Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. Old snapshots are automatically sent to the Recycle Bin — the default keeps the last 5 backups.
 
 **Run it manually:**
 
@@ -95,14 +95,14 @@ python tools/sessions/backup_claude_state.py
 python tools/sessions/backup_claude_state.py --dry-run   # see what would be zipped
 ```
 
-**Schedule it weekly (Task Scheduler):**
+**Schedule it daily (Task Scheduler):**
 
 | Field | Value |
 |---|---|
 | Program | `py` |
 | Arguments | `-3 "C:\path\to\tools\sessions\backup_claude_state.py"` |
 | Start In | your repo root |
-| Trigger | Weekly, Sunday 6:00 AM |
+| Trigger | Daily, 6:00 AM |
 | Run As | your user account |
 
 Running while Desktop is open is fine — all source operations are read-only.

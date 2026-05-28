@@ -57,9 +57,17 @@ PROBLEM FOUND: Session is in the session list but its conversation history is mi
   Status : Needs investigation. The JSONL may exist in a backup, shadow copy, or cloud version history. Diagnose is read-only.
 
   Next:  python tools/sessions/find_missing_jsonls_in_backup.py [--backup PATH]
+
+PROBLEM FOUND: Session is in the session list but its conversation history is missing from disk
+  Details: docs/recovering-deleted-jsonls.md#windows-vss-shadow-copies
+  Safety : Quit Claude Desktop fully before restoring. Diagnose is read-only.
+
+  To repair -- dry-run first, review output, then add --apply:
+    python tools/sessions/restore_from_vss.py --diagnosis-id <id>
+    python tools/sessions/restore_from_vss.py --diagnosis-id <id> --apply
 ```
 
-`diagnose.py` will also print how many sessions are in this state.
+`diagnose.py` will also print how many sessions are in this state. On Windows, it prints both problems — the backup-search path and the automated VSS restore path.
 
 **Recovery options:**
 

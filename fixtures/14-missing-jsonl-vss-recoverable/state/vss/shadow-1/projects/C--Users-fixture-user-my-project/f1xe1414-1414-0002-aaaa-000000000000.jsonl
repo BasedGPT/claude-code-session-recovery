@@ -1,0 +1,5 @@
+{"type": "user", "message": {"role": "user", "content": "Fixture 14 session 2 message 1"}, "timestamp": "2025-01-14T00:01:01.000Z", "sessionId": "f1xe1414-1414-0002-aaaa-000000000000"}
+{"type": "assistant", "message": {"role": "assistant", "content": "Fixture 14 session 2 response 1"}, "timestamp": "2025-01-14T00:01:02.000Z", "sessionId": "f1xe1414-1414-0002-aaaa-000000000000"}
+{"type": "user", "message": {"role": "user", "content": "Fixture 14 session 2 message 2"}, "timestamp": "2025-01-14T00:01:03.000Z", "sessionId": "f1xe1414-1414-0002-aaaa-000000000000"}
+{"type": "assistant", "message": {"role": "assistant", "content": "Fixture 14 session 2 response 2"}, "timestamp": "2025-01-14T00:01:04.000Z", "sessionId": "f1xe1414-1414-0002-aaaa-000000000000"}
+{"type": "user", "message": {"role": "user", "content": "Fixture 14 session 2 message 3"}, "timestamp": "2025-01-14T00:01:05.000Z", "sessionId": "f1xe1414-1414-0002-aaaa-000000000000"}

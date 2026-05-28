@@ -16,14 +16,22 @@ Claude Desktop prunes old transcript files, and they can also disappear through 
 
    If you have one, compare file stems in that location against the missing UUID. The transcript filename is `<uuid>.jsonl`; the UUID comes from the `cliSessionId` field in the Desktop metadata file at `%APPDATA%\Claude\claude-code-sessions\<acct>\<org>\local_<uuid>.json`.
 
-2. **Windows VSS shadow copies**
+2. <a id="windows-vss-shadow-copies"></a>**Windows VSS shadow copies**
 
-   Available if System Protection is enabled on your C: drive. Two ways to check:
+   Available if System Protection is enabled on your C: drive. The automated path:
+
+   ```
+   python tools/diagnose.py
+   python tools/sessions/restore_from_vss.py --diagnosis-id <id>
+   python tools/sessions/restore_from_vss.py --diagnosis-id <id> --apply
+   ```
+
+   `diagnose.py` will show the `restore_from_vss.py` command with the correct token if VSS recovery is applicable. Manual verification — two ways to check directly:
 
    - Right-click the `projects\` folder in Explorer → Properties → Previous Versions tab.
-   - From an elevated PowerShell prompt: `vssadmin list shadows`
+   - From a PowerShell prompt: `Get-CimInstance Win32_ShadowCopy | Select-Object DeviceObject,InstallDate`
 
-   Look for any snapshot dated before the JSONL disappeared. If one exists, mount it and copy the file out.
+   If a shadow copy predating the deletion exists, `restore_from_vss.py` finds it automatically. For manual recovery, locate any snapshot dated before the JSONL disappeared, mount it, and copy the file out.
 
 3. **Cloud-provider version history on the backup folder itself**
 

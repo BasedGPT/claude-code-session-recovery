@@ -36,6 +36,20 @@ Run `python tools/diagnose.py` first — it reads this table, probes your state,
 
 ---
 
+### cli-points-missing-jsonl-vss
+
+**Symptom:** Session is in the session list but its conversation history is missing from disk.
+
+**Root cause:** Metadata file has a valid `cliSessionId` but the JSONL transcript it points at no longer exists on disk. Windows VSS shadow copies may contain a recoverable version.
+
+**Fix:** `python tools/diagnose.py` will check whether VSS shadow copies contain a recoverable version and print the restore command.
+
+**Safety:** Quit Claude Desktop fully before restoring. `diagnose.py` is read-only.
+
+**Details:** [docs/recovering-deleted-jsonls.md#windows-vss-shadow-copies](docs/recovering-deleted-jsonls.md#windows-vss-shadow-copies)
+
+---
+
 ### duplicate-synth-metadata
 
 **Symptom:** Two sessions in the session list open to the same conversation history.

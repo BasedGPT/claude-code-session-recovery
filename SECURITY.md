@@ -12,9 +12,10 @@ Scripts in this repo read from four locations on your system:
 Mutating scripts write to:
 
 - The specific metadata files they repair, in-place, after creating a backup
-- `.\repair-backup\` — a directory created next to where the script runs; originals go here before any mutation
+- `%USERPROFILE%\.claude\projects\<slug>\<uuid>.jsonl` — `restore_from_vss.py` only; writes recovered transcripts as new files, never overwrites an existing JSONL
+- `.\repair-backup\` — a directory created next to where the script runs; originals go here before any mutation, and `restore_from_vss.py` writes a restore log here
 
-No other files are touched. Scripts never write to JSONL transcripts, never touch the registry, and never access credentials or the clipboard.
+No other files are touched. Scripts never touch the registry and never access credentials or the clipboard.
 
 You must trust this repo's code before running it. The source is short and readable — start at `tools/diagnose.py`.
 
@@ -55,7 +56,7 @@ Every mutating script enforces these conditions before touching anything:
 - No writes outside the two state directories listed above and the local `.\repair-backup\` folder
 - No registry reads or writes
 - No clipboard access
-- No process spawning beyond `tasklist` and `claude --version` (used for version detection)
+- No process spawning beyond `tasklist`, `claude --version` (version detection), and PowerShell + `vssadmin` (`restore_from_vss.py` only, for VSS enumeration)
 
 ## Reproducibility
 

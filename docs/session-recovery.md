@@ -63,10 +63,11 @@ PROBLEM FOUND: Session is in the session list but its conversation history is mi
 
 **Recovery options:**
 
-- `find_missing_jsonls_in_backup.py` searches a backup directory you specify for the missing transcript by session ID. Point it at any external backup you maintain.
-- If no backup is found after working through [docs/recovering-deleted-jsonls.md](recovering-deleted-jsonls.md), the conversation content is likely gone. The metadata (title, model, date) remains intact.
+- **Windows VSS (automated):** `restore_from_vss.py` searches Windows shadow copies for the missing transcript and restores it in one command. `diagnose.py` routes you here automatically. See [recovering-deleted-jsonls.md#windows-vss-shadow-copies](recovering-deleted-jsonls.md#windows-vss-shadow-copies).
+- **User backup:** `find_missing_jsonls_in_backup.py` searches a backup directory you specify for the missing transcript by session ID. Point it at any external backup you maintain.
+- If neither option finds the file, work through the full checklist at [recovering-deleted-jsonls.md](recovering-deleted-jsonls.md). The conversation content may be unrecoverable, but the metadata (title, model, date) remains intact.
 
-**Recovery time:** 5–15 minutes if a backup exists. Immediate if no backup.
+**Recovery time:** 2–5 minutes if VSS or backup has the file. Immediate if neither does.
 
 ---
 

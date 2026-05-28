@@ -1,0 +1,15 @@
+Sessions with missing JSONL: 2
+VSS shadow copies found:     1
+Diagnosis ID: 1d0266f9
+
+=== Recoverable from VSS (0) ===
+
+=== Not found in VSS (2) ===
+  local_01.json f1xe1515 Fixture 15 session 1
+  local_02.json f1xe1515 Fixture 15 session 2
+
+  See docs/recovering-deleted-jsonls.md for other recovery options,
+  including user-configured backup search:
+    python tools/sessions/find_missing_jsonls_in_backup.py [--backup PATH]
+
+Summary: 0 recoverable from VSS, 2 not found.

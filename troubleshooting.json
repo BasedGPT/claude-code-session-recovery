@@ -31,6 +31,21 @@
     }
   },
   {
+    "id": "cli-points-missing-jsonl-vss",
+    "domain": "session",
+    "problem": "Session is in the session list but its conversation history is missing from disk",
+    "what_to_do": "Run tools/diagnose.py first. It will check whether VSS shadow copies contain a recoverable version of the transcript.",
+    "details": "docs/recovering-deleted-jsonls.md#windows-vss-shadow-copies",
+    "safety": "Quit Claude Desktop fully before restoring. Diagnose is read-only.",
+    "fixture": "14-missing-jsonl-vss-recoverable",
+    "mutator": "tools/sessions/restore_from_vss.py",
+    "match": {
+      "any": [
+        {"snapshot.metadata_dangling_cli_count": {">=": 1}}
+      ]
+    }
+  },
+  {
     "id": "duplicate-synth-metadata",
     "domain": "session",
     "problem": "Two sessions in the session list open to the same conversation history",

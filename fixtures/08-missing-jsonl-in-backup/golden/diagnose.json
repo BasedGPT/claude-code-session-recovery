@@ -16,6 +16,15 @@
       "safety_preconditions": [
         "Needs investigation. The JSONL may exist in a backup, shadow copy, or cloud version history. Diagnose is read-only."
       ]
+    },
+    {
+      "id": "cli-points-missing-jsonl-vss",
+      "domain": "session",
+      "mutator": "tools/sessions/restore_from_vss.py",
+      "next_command": "python tools/sessions/restore_from_vss.py --diagnosis-id 49cacff4",
+      "safety_preconditions": [
+        "Quit Claude Desktop fully before restoring. Diagnose is read-only."
+      ]
     }
   ],
   "audit_only_problems": [],

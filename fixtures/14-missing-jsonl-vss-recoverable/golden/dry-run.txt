@@ -1,0 +1,19 @@
+Sessions with missing JSONL: 2
+VSS shadow copies found:     2
+Diagnosis ID: 1d0266f9
+
+=== Recoverable from VSS (2) ===
+  local_01.json f1xe1414 Fixture 14 session 1
+      source:  vss\shadow-1\projects\C--Users-fixture-user-my-project\f1xe1414-1414-0001-aaaa-000000000000.jsonl
+      dest:    projects\C--Users-fixture-user-my-project\f1xe1414-1414-0001-aaaa-000000000000.jsonl
+      records: 3  size: 566 B
+  local_02.json f1xe1414 Fixture 14 session 2
+      source:  vss\shadow-1\projects\C--Users-fixture-user-my-project\f1xe1414-1414-0002-aaaa-000000000000.jsonl
+      dest:    projects\C--Users-fixture-user-my-project\f1xe1414-1414-0002-aaaa-000000000000.jsonl
+      records: 5  size: 947 B
+
+=== Not found in VSS (0) ===
+
+Summary: 2 recoverable from VSS, 0 not found.
+
+Dry-run -- no files written. Add --apply to restore.

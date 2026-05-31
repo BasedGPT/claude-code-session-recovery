@@ -1,378 +1,421 @@
-"""
-Invoked via diagnose.py. Not intended for direct invocation.
-To diagnose your state: python tools/diagnose.py
+r"""
+Restore deleted Claude Code JSONL transcripts from Windows Volume Shadow Copies (VSS).
 
-Restore JSONL transcripts from Windows Volume Shadow Copy Service (VSS).
+Scans all available VSS shadow copies for JSONL transcript files that are missing
+from or smaller than their counterpart in ~/.claude/projects/. Selects the largest
+version of each file across all shadow copies (append-only files, so largest =
+most complete), then restores it.
 
-Searches VSS shadow copies for JSONL transcripts that are missing from
-~\\.claude\\projects\\ but still referenced by Desktop metadata files
-(cliSessionId set, transcript deleted). For each missing JSONL found,
-picks the version with the most valid records (append-only, so more records
-= more complete) and optionally copies it back to the expected location.
-
-VSS shadow copies are the "Previous Versions" you see in Windows Explorer.
-This tool does not require elevation — reading from VSS paths is unprivileged.
+Requires elevation -- VSS shadow copy access requires administrator privileges.
+Run from an elevated PowerShell or Command Prompt.
 
 Files read:
-  - %APPDATA%\\Claude\\claude-code-sessions\\<account-uuid>\\<org-uuid>\\local_*.json
-  - %USERPROFILE%\\.claude\\projects\\<slug>\\  (to verify JSONL is absent)
-  - \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopyN\\...  (VSS shadow paths)
+  - \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\Users\<user>\.claude\projects\**\*.jsonl
 
 Files written (--apply only):
-  - %USERPROFILE%\\.claude\\projects\\<slug>\\<cli-session-id>.jsonl
-  - ./repair-backup/restore_from_vss_<date>.log  (restore log)
+  - %USERPROFILE%\.claude\projects\<slug>\<session-id>.jsonl
 
 Usage:
-    python tools/sessions/restore_from_vss.py --diagnosis-id <hex>
-    python tools/sessions/restore_from_vss.py --diagnosis-id <hex> --apply
-    python tools/sessions/restore_from_vss.py --diagnosis-id <hex> --state <fixture-path>
+  py -3 restore_from_vss.py                        # dry-run (default)
+  py -3 restore_from_vss.py --apply                # restore candidates
+  py -3 restore_from_vss.py --projects-dir <path>  # override default projects dir
 
-Windows only. VSS is a Windows feature.
+Restoring from VSS -- read this first:
+  This tool preserves original filesystem mtimes when copying. Claude Code's
+  cleanup (cleanupOldSessionFiles) deletes JSONLs based on mtime, not message
+  timestamp. If you restore files while cleanupPeriodDays is at its default
+  (30 days), any JSONL with an mtime older than 30 days will be re-deleted on
+  the next Claude Desktop launch.
+
+  Before running with --apply:
+    1. Open ~/.claude/settings.json
+    2. Set "cleanupPeriodDays": 36500  (approximately 100 years)
+    3. Run this script with --apply, then run synth_session_metadata.py to restore visibility
+    4. Revert cleanupPeriodDays to your preferred value once sessions are recovered
+
+  This applies to any restore method that preserves original file timestamps
+  (this script, manual zip extraction, or VSS/Time Machine snapshot tools).
 """
+
 import argparse
-import json
+import atexit
+import csv
+import io
 import os
-import platform
+import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
 
-_TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _TOOLS_DIR)
 try:
-    from diagnose import (
-        build_snapshot, make_diagnosis_id, _find_meta_dirs,
-        _slug_encode, _build_jsonl_index,
-    )
-except ImportError as exc:
-    print("ERROR: cannot import from diagnose.py: {}".format(exc))
-    print("Run from the repo root: python tools/sessions/restore_from_vss.py")
-    sys.exit(1)
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+except AttributeError:
+    pass  # no buffer when stdout is None (e.g. pythonw.exe or redirected NUL)
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
-BACKUP_DIR = os.path.join(TOOL_DIR, "repair-backup")
+sys.path.insert(0, TOOL_DIR)
+from lock_utils import acquire_lock, release_lock  # noqa: E402
 
+# --- Configuration ---
+# Where JSONL transcripts live. Override with --projects-dir for testing.
+PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 
-def _default_paths():
-    return (
-        os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"),
-        os.path.join(os.path.expanduser("~"), ".claude", "projects"),
-    )
+# Lock file -- prevents concurrent runs.
+LOCK_FILE = os.path.join(
+    os.environ.get("TEMP", os.path.expanduser("~")),
+    "restore_from_vss.lock",
+)
 
+# Original live files overwritten by --apply are copied here first.
+BACKUP_DIR = os.path.join(TOOL_DIR, "restore-backup")
 
-# ---------------------------------------------------------------------------
-# Known-do-not-run conditions (schema probe + empty-target guard)
-# ---------------------------------------------------------------------------
+# --- End configuration ---
 
-KNOWN_DO_NOT_RUN = [
-    (
-        lambda s: s["metadata_dangling_cli_count"] == 0,
-        "No sessions with missing JSONL transcripts found. Nothing to restore.",
-    ),
-    (
-        lambda s: s["schema_version"] == "unrecognised",
-        "State schema not recognised. Run diagnose.py and report the "
-        "unsupported state to the maintainer.",
-    ),
-]
+# WMI datetime format: YYYYMMDDHHMMSS.ffffff+offset
+_WMI_DT_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})")
 
 
 # ---------------------------------------------------------------------------
-# VSS enumeration
+# Admin + VSS availability
 # ---------------------------------------------------------------------------
 
-def _shadow_projects_path(device_object, projects_dir):
-    """Construct the VSS shadow path for projects_dir under device_object.
-
-    device_object is e.g. '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy5'
-    projects_dir  is e.g. 'C:\\Users\\Robbie\\.claude\\projects'
-    result        is e.g. '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy5\\Users\\Robbie\\.claude\\projects'
-    """
-    _drive, rel = os.path.splitdrive(os.path.abspath(projects_dir))
-    rel = rel.lstrip("\\/")
-    return device_object.rstrip("\\/") + "\\" + rel
-
-
-def _enumerate_vss_roots_powershell(projects_dir):
-    """Return list of shadow_projects_path strings via CIM Win32_ShadowCopy.
-
-    Returns None on failure (caller falls back to vssadmin).
-    Uses structured CIM output to avoid locale-sensitive text parsing.
-    Filters shadows to only those on the same volume as projects_dir.
-    """
-    ps_script = (
-        "$s = Get-CimInstance Win32_ShadowCopy | "
-        "Select-Object DeviceObject,VolumeName,InstallDate; "
-        "$v = Get-CimInstance Win32_Volume | "
-        "Select-Object DeviceID,DriveLetter; "
-        "[ordered]@{ShadowCopies=$s;Volumes=$v} | ConvertTo-Json -Depth 3"
-    )
+def _is_admin():
+    """Return True if the current process has administrator privileges."""
+    if sys.platform != "win32":
+        return False
     try:
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=30,
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _check_vss_available():
+    try:
+        result = subprocess.run(
+            ["vssadmin", "list", "shadowstorage"],
+            capture_output=True, text=True, timeout=30,
         )
-        if r.returncode != 0 or not r.stdout.strip():
-            return None
-        data = json.loads(r.stdout)
-    except (subprocess.TimeoutExpired, ValueError, OSError):
-        return None
+        if result.returncode != 0:
+            return False
+        output = (result.stdout + result.stderr).lower()
+        if "no items found" in output:
+            return False
+        return "shadow copy storage" in output
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
 
-    volumes_raw = data.get("Volumes") or []
-    if isinstance(volumes_raw, dict):
-        volumes_raw = [volumes_raw]
-    # Map DeviceID (volume GUID path) -> drive letter, e.g. "C:"
-    drive_map = {}
-    for v in volumes_raw:
-        did = (v.get("DeviceID") or "").upper().rstrip("\\")
-        dl = (v.get("DriveLetter") or "").upper()
-        if did and dl:
-            drive_map[did] = dl
-
-    target_drive = os.path.splitdrive(os.path.abspath(projects_dir))[0].upper()
-
-    shadows_raw = data.get("ShadowCopies") or []
-    if isinstance(shadows_raw, dict):
-        shadows_raw = [shadows_raw]
-
-    roots = []
-    for s in shadows_raw:
-        device = (s.get("DeviceObject") or "").strip()
-        vol_name = (s.get("VolumeName") or "").upper().rstrip("\\")
-        if not device:
-            continue
-        mapped_drive = drive_map.get(vol_name, "")
-        # If we can determine the drive and it doesn't match, skip.
-        # If drive_map is empty or vol_name unrecognised, include the shadow
-        # (fail-safe: better to search too much than miss the right shadow).
-        if mapped_drive and mapped_drive != target_drive:
-            continue
-        roots.append(_shadow_projects_path(device, projects_dir))
-    return roots
-
-
-def _enumerate_vss_roots_vssadmin(projects_dir):
-    """Fallback: parse 'vssadmin list shadows' text output.
-
-    Locale-sensitive but widely available. Used when PowerShell CIM fails.
-    """
-    try:
-        r = subprocess.run(
-            ["vssadmin", "list", "shadows"],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=30,
-        )
-        # Exit 1 means no shadow copies — not an error
-        if r.returncode not in (0, 1):
-            return []
-    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
-        return []
-
-    target_drive = os.path.splitdrive(os.path.abspath(projects_dir))[0].upper()
-    roots = []
-    current_orig_drive = ""
-    for line in r.stdout.splitlines():
-        stripped = line.strip().lower()
-        # "Original Volume:" or "Original Volume Name:" lines identify the volume
-        if "original volume" in stripped and ":" in stripped:
-            paren_start = line.find("(")
-            paren_end = line.find(")")
-            if paren_start >= 0 and paren_end > paren_start:
-                candidate = line[paren_start + 1:paren_end].upper().rstrip("\\")
-                if len(candidate) == 2 and candidate[1] == ":":
-                    current_orig_drive = candidate
-        # "Shadow Copy Volume:" lines give the device object path
-        if "shadow copy volume" in stripped and ":" in stripped:
-            colon_pos = line.find(":")
-            if colon_pos >= 0:
-                device = line[colon_pos + 1:].strip()
-                if device and "\\" in device:
-                    if not current_orig_drive or current_orig_drive == target_drive:
-                        roots.append(_shadow_projects_path(device, projects_dir))
-    return roots
-
-
-def _enumerate_vss_roots(projects_dir, state=None):
-    """Return list of shadow_projects_path strings to search.
-
-    In fixture mode (state != None): scans state/vss/shadow-*/ directories.
-    In live mode: tries PowerShell CIM, falls back to vssadmin.
-    """
-    if state is not None:
-        vss_root = os.path.join(state, "vss")
-        if not os.path.isdir(vss_root):
-            return []
-        roots = []
-        for name in sorted(os.listdir(vss_root)):
-            shadow_dir = os.path.join(vss_root, name)
-            if not os.path.isdir(shadow_dir):
-                continue
-            roots.append(os.path.join(shadow_dir, "projects"))
-        return roots
-
-    roots = _enumerate_vss_roots_powershell(projects_dir)
-    if roots is None:
-        roots = _enumerate_vss_roots_vssadmin(projects_dir)
-    return roots or []
-
-
-# ---------------------------------------------------------------------------
-# Candidate validation and selection
-# ---------------------------------------------------------------------------
-
-def _count_valid_records(path, expected_sid):
-    """Parse JSONL, count records whose sessionId == expected_sid.
-
-    Returns (count, last_timestamp_str). Rejects files where sessionId never
-    matches — guards against wrong-session files with the right UUID filename.
-    """
-    count = 0
-    last_ts = ""
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except (ValueError, TypeError):
-                    continue
-                sid = rec.get("sessionId") or ""
-                if isinstance(sid, str) and sid == expected_sid:
-                    count += 1
-                    ts = rec.get("timestamp") or ""
-                    if isinstance(ts, str) and ts > last_ts:
-                        last_ts = ts
-    except OSError:
-        pass
-    return count, last_ts
-
-
-def _find_best_candidate(cli_sid, vss_roots):
-    """Search all VSS shadow roots for cli_sid.jsonl.
-
-    Searches every slug directory in each shadow root (not just the one
-    derived from current metadata cwd) to handle renamed projects.
-
-    Returns (best_path, shadow_root, valid_count) or (None, None, 0).
-    Ranks by: valid record count (desc), last timestamp (desc), byte size (desc).
-    """
-    candidates = []
-    fname = "{}.jsonl".format(cli_sid)
-    for shadow_projects in vss_roots:
-        if not os.path.isdir(shadow_projects):
-            continue
-        try:
-            for slug in sorted(os.listdir(shadow_projects)):
-                slug_dir = os.path.join(shadow_projects, slug)
-                if not os.path.isdir(slug_dir):
-                    continue
-                candidate = os.path.join(slug_dir, fname)
-                if not os.path.isfile(candidate):
-                    continue
-                valid_count, last_ts = _count_valid_records(candidate, cli_sid)
-                if valid_count > 0:
-                    size = os.path.getsize(candidate)
-                    candidates.append((valid_count, last_ts, size, candidate, shadow_projects))
-        except OSError:
-            pass
-
-    if not candidates:
-        return None, None, 0
-
-    candidates.sort(key=lambda c: (c[0], c[1], c[2]), reverse=True)
-    best = candidates[0]
-    return best[3], best[4], best[0]
-
-
-# ---------------------------------------------------------------------------
-# Session discovery
-# ---------------------------------------------------------------------------
-
-def _find_dangling(appdata_claude_dir, projects_dir):
-    """Yield (meta_file, cli_sid, title, cwd) for sessions with no live JSONL."""
-    jsonl_index = _build_jsonl_index(projects_dir)
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
-        for fname in sorted(os.listdir(meta_dir)):
-            if not (fname.startswith("local_") and fname.endswith(".json")):
-                continue
-            fpath = os.path.join(meta_dir, fname)
-            try:
-                with open(fpath, "r", encoding="utf-8") as fh:
-                    d = json.load(fh)
-            except Exception:
-                continue
-            cli = (d.get("cliSessionId") or "").strip()
-            if not cli or cli in jsonl_index:
-                continue
-            yield (fname, cli, (d.get("title") or "")[:60], d.get("cwd") or "")
-
-
-# ---------------------------------------------------------------------------
-# Atomic restore
-# ---------------------------------------------------------------------------
-
-def _atomic_copy(src, dest):
-    """Copy src to dest atomically via a temp file.
-
-    Returns (True, "") on success or (False, error_message) on failure.
-    Creates parent directories as needed. Never overwrites an existing dest.
-    """
-    dest_dir = os.path.dirname(dest)
-    try:
-        os.makedirs(dest_dir, exist_ok=True)
-    except OSError as e:
-        return False, "makedirs failed: {}".format(e)
-    tmp = dest + ".tmp"
-    try:
-        shutil.copy2(src, tmp)
-    except OSError as e:
-        return False, "copy failed: {}".format(e)
-    try:
-        if os.path.exists(dest):
-            os.unlink(tmp)
-            return False, "destination appeared unexpectedly; skipped"
-        os.rename(tmp, dest)
-    except OSError as e:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        return False, "rename failed: {}".format(e)
-    return True, ""
-
-
-# ---------------------------------------------------------------------------
-# Process check
-# ---------------------------------------------------------------------------
 
 def _desktop_running():
-    """Return True if claude.exe is in the Windows process list."""
+    """Return True if Claude Desktop is currently present in tasklist."""
     try:
-        r = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq claude.exe", "/NH", "/FO", "CSV"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq claude.exe", "/NH"],
+            capture_output=True, text=True, timeout=10,
         )
-        return "claude.exe" in r.stdout.lower()
-    except OSError:
+        return "claude.exe" in result.stdout.lower()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
 
 
 # ---------------------------------------------------------------------------
-# Display helpers
+# Shadow copy enumeration
 # ---------------------------------------------------------------------------
 
-def _display_path(path, base):
-    """Return path relative to base for deterministic fixture output, else absolute."""
-    if base is None:
-        return path
+def _enumerate_shadow_copies(projects_dir):
+    """
+    Return a list of dicts [{device, install_date}] for all available shadow copies.
+
+    device       -- e.g. '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy14'
+    install_date -- ISO-8601 string, e.g. '2026-05-20T06:00:00'
+
+    Tries PowerShell (Get-CimInstance) first, falls back to wmic.
+    Returns [] when no shadow copies exist or both methods fail.
+    """
+    copies = []
+    drive = os.path.splitdrive(projects_dir)[0].upper()
+
+    # Primary: PowerShell Get-CimInstance with explicit s-format date string.
+    ps_cmd = (
+        "param([string]$DL) "
+        "$vol = (Get-CimInstance Win32_Volume -Filter \"DriveLetter = '$DL'\").DeviceID; "
+        "Get-CimInstance Win32_ShadowCopy "
+        "| Where-Object { $_.VolumeName -eq $vol } "
+        "| ForEach-Object { $_.DeviceObject + '|' + $_.InstallDate.ToString('s') }"
+    )
     try:
-        return os.path.relpath(path, base)
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-Command", ps_cmd, "-DL", drive],
+            capture_output=True, text=True, timeout=30,
+        )
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if "|" not in line:
+                continue
+            device, install_date = line.split("|", 1)
+            device = device.strip()
+            if device.startswith("\\\\?\\") or device.startswith("\\\\.\\"):
+                copies.append({"device": device, "install_date": install_date.strip()})
+        if copies:
+            return copies
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    # Fallback: wmic shadowcopy (available on all Windows editions).
+    try:
+        result = subprocess.run(
+            ["wmic", "shadowcopy", "get",
+             "DeviceObject,InstallDate,VolumeName", "/FORMAT:CSV"],
+            capture_output=True, text=True, timeout=30,
+        )
+        unfiltered = []
+        for row in csv.DictReader(io.StringIO(result.stdout.lstrip("\ufeff"))):
+            device = (row.get("DeviceObject") or "").strip()
+            install_date_wmi = (row.get("InstallDate") or "").strip()
+            if not device.startswith("\\\\?\\"):
+                continue
+            m = _WMI_DT_RE.match(install_date_wmi)
+            install_date = (
+                "{}-{}-{}T{}:{}:{}".format(*m.groups()) if m else install_date_wmi
+            )
+            unfiltered.append({
+                "device": device,
+                "install_date": install_date,
+                "volume_name": (row.get("VolumeName") or "").strip(),
+            })
+
+        volume_cmd = (
+            "param([string]$DL) "
+            "(Get-CimInstance Win32_Volume -Filter \"DriveLetter = '$DL'\").DeviceID"
+        )
+        volume_result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-Command", volume_cmd, "-DL", drive],
+            capture_output=True, text=True, timeout=30,
+        )
+        expected_volume = volume_result.stdout.strip()
+        if volume_result.returncode == 0 and expected_volume:
+            copies = [
+                {"device": item["device"], "install_date": item["install_date"]}
+                for item in unfiltered
+                if item["volume_name"] == expected_volume
+            ]
+        else:
+            print("  WARNING: unable to filter wmic shadow copies by volume; "
+                  "using all local-drive shadow copies.", file=sys.stderr)
+            copies = [
+                {"device": item["device"], "install_date": item["install_date"]}
+                for item in unfiltered
+            ]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    return copies
+
+
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+def _shadow_projects_path(device_object, projects_dir):
+    """
+    Return the shadow copy equivalent of projects_dir.
+
+    e.g. device='\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy14',
+         projects_dir='C:\\Users\\Robbie\\.claude\\projects'
+         -> '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy14\\Users\\Robbie\\.claude\\projects'
+    """
+    _, path_from_drive = os.path.splitdrive(projects_dir)
+    return device_object + path_from_drive
+
+
+def _rel_path(full_path, base_path):
+    """Compute the relative path robustly for extended (\\?\\...) paths."""
+    # os.path.relpath works on extended paths since both share the same prefix.
+    try:
+        rel = os.path.relpath(full_path, base_path)
+        # Sanity check: relpath should not climb above base_path.
+        if rel.startswith(".."):
+            raise ValueError("relpath escaped base: {}".format(rel))
+        return rel
     except ValueError:
-        return path
+        # Fall back to manual strip for UNC/extended paths.
+        if full_path.startswith(base_path):
+            return full_path[len(base_path):].lstrip("\\/")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# JSONL scanning
+# ---------------------------------------------------------------------------
+
+def _scan_shadow_for_jsonls(shadow_projects_dir, device_object, install_date):
+    """
+    Walk shadow_projects_dir and return a list of dicts for each .jsonl file.
+
+    Each dict: {rel_path, shadow_path, shadow_size, install_date, device}
+    rel_path is relative to shadow_projects_dir.
+    Returns [] if the path does not exist or is inaccessible.
+    """
+    results = []
+    try:
+        for root, _dirs, files in os.walk(shadow_projects_dir):
+            for fname in files:
+                if not fname.endswith(".jsonl"):
+                    continue
+                full = os.path.join(root, fname)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                try:
+                    rel = _rel_path(full, shadow_projects_dir)
+                except (ValueError, TypeError):
+                    continue
+                results.append({
+                    "rel_path": rel,
+                    "shadow_path": full,
+                    "shadow_size": st.st_size,
+                    "install_date": install_date,
+                    "device": device_object,
+                })
+    except (OSError, PermissionError):
+        pass
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Candidate selection
+# ---------------------------------------------------------------------------
+
+def _build_candidates(shadow_copies, projects_dir):
+    """
+    Scan all shadow copies and return the best restore candidate per file.
+
+    Selection rule: largest shadow copy version of each file, where
+    shadow_size > live_size (or the live file is absent).
+
+    Returns a list of candidate dicts sorted by rel_path, each containing:
+      rel_path, live_path, live_exists, live_size, shadow_path, shadow_size,
+      install_date, device
+    """
+    best = {}  # rel_path -> best candidate so far
+
+    for sc in shadow_copies:
+        shadow_projects = _shadow_projects_path(sc["device"], projects_dir)
+        found = _scan_shadow_for_jsonls(shadow_projects, sc["device"], sc["install_date"])
+        for item in found:
+            rel = item["rel_path"]
+            if rel not in best or item["shadow_size"] > best[rel]["shadow_size"]:
+                best[rel] = item
+
+    candidates = []
+    for rel, item in sorted(best.items()):
+        live_path = os.path.join(projects_dir, rel)
+        live_exists = os.path.isfile(live_path)
+        live_size = os.path.getsize(live_path) if live_exists else 0
+        if item["shadow_size"] <= live_size:
+            continue  # live copy is already at least as complete
+        candidate = dict(item)
+        candidate["live_path"] = live_path
+        candidate["live_exists"] = live_exists
+        candidate["live_size"] = live_size
+        candidates.append(candidate)
+
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+
+def _fmt_size(n):
+    if n < 1024:
+        return "{:,} B".format(n)
+    if n < 1024 * 1024:
+        return "{:.1f} KB".format(n / 1024)
+    return "{:.1f} MB".format(n / (1024 * 1024))
+
+
+def _print_candidates_table(candidates):
+    """Print a summary table of restore candidates."""
+    if not candidates:
+        print("No candidates -- all live files are at least as large as their shadow copies.")
+        return
+
+    print("Candidates: {}".format(len(candidates)))
+    print()
+
+    # Column widths
+    col_date = max(len("Shadow Date"), max(len(c["install_date"]) for c in candidates))
+    col_path = min(
+        max(len("File"), max(len(c["rel_path"]) for c in candidates)),
+        60,  # cap for display
+    )
+    col_sz = 12
+
+    header = "  {:<{d}}  {:<{p}}  {:>{s}}  {:>{s}}".format(
+        "Shadow Date", "File", "Shadow", "Live",
+        d=col_date, p=col_path, s=col_sz,
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+
+    for c in candidates:
+        path_display = c["rel_path"]
+        if len(path_display) > col_path:
+            path_display = "..." + path_display[-(col_path - 3):]
+        live_str = "(missing)" if not c["live_exists"] else _fmt_size(c["live_size"])
+        print("  {:<{d}}  {:<{p}}  {:>{s}}  {:>{s}}".format(
+            c["install_date"], path_display,
+            _fmt_size(c["shadow_size"]), live_str,
+            d=col_date, p=col_path, s=col_sz,
+        ))
+
+
+def _first_bytes_match(left_path, right_path, byte_count):
+    """Compare exactly byte_count leading bytes in two files."""
+    remaining = byte_count
+    with open(left_path, "rb") as left, open(right_path, "rb") as right:
+        while remaining:
+            chunk_size = min(1024 * 1024, remaining)
+            if left.read(chunk_size) != right.read(chunk_size):
+                return False
+            remaining -= chunk_size
+    return True
+
+
+def _print_reminders(dry_run):
+    """Print the mtime warning and the synth_session_metadata next-step reminder."""
+    print()
+    print("=" * 72)
+    print("IMPORTANT -- mtime / cleanupPeriodDays interaction")
+    print()
+    print("  This tool preserves original filesystem mtimes when copying.")
+    print("  Claude Code's cleanup deletes JSONLs based on mtime, not message")
+    print("  timestamp. If cleanupPeriodDays is at its default (30 days), any")
+    print("  JSONL with an mtime older than 30 days will be re-deleted on the")
+    print("  next Claude Desktop launch.")
+    print()
+    if dry_run:
+        print("  Before running with --apply:")
+    else:
+        print("  If you have not already done so:")
+    print("    1. Open ~/.claude/settings.json")
+    print('    2. Set "cleanupPeriodDays": 36500  (approximately 100 years)')
+    print("    3. Run this script with --apply, then run synth_session_metadata.py")
+    print("    4. Revert cleanupPeriodDays to your preferred value once sessions are recovered")
+    print()
+    print("  This applies to any restore method that preserves original file")
+    print("  timestamps (this script, backup_claude_state.py zip extracts, or")
+    print("  other snapshot tools).")
+    print()
+    print("Next step after restoring:")
+    print("  python tools/diagnose.py")
+    print("  python tools/sessions/synth_session_metadata.py --diagnosis-id <id>")
+    print("  (diagnose.py prints the current diagnosis ID)")
+    print("=" * 72)
 
 
 # ---------------------------------------------------------------------------
@@ -380,201 +423,169 @@ def _display_path(path, base):
 # ---------------------------------------------------------------------------
 
 def main():
-    if platform.system() != "Windows":
-        # Fixture tests on CI use windows-latest; this guard is for direct misuse.
-        print("ERROR: restore_from_vss.py is Windows-only.")
-        print("VSS (Volume Shadow Copy Service) is a Windows feature.")
-        sys.exit(1)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     ap = argparse.ArgumentParser(
         description=(
-            "Restore JSONL transcripts from Windows VSS shadow copies. "
-            "Dry-run by default — add --apply to restore."
+            "Restore deleted Claude Code JSONL transcripts from Windows VSS shadow copies. "
+            "Dry-run by default -- add --apply to write files."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument(
-        "--diagnosis-id", metavar="HEX", default=None, dest="diagnosis_id",
-        help="Diagnosis token from diagnose.py (required).",
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="Print candidates without restoring (default behaviour).",
     )
-    ap.add_argument(
-        "--force-with-diagnosis-id", metavar="VALUE", default=None,
-        dest="force_diagnosis_id",
-        help="Set to 'audit-only' to run dry-run without a current token.",
-    )
-    ap.add_argument(
+    mode.add_argument(
         "--apply", action="store_true",
-        help="Restore files in-place. Default is dry-run.",
+        help="Copy selected files from shadow copies to the live projects directory.",
     )
     ap.add_argument(
-        "--state", metavar="PATH", default=None,
-        help="Fixture state directory for testing "
-             "(must contain appdata/Claude/... and projects/ subdirectories).",
-    )
-    ap.add_argument(
-        "--quiet", action="store_true",
-        help="Print summary counts only.",
+        "--projects-dir", metavar="PATH", default=None, dest="projects_dir",
+        help="Override the default ~/.claude/projects/ path (for testing).",
     )
     args = ap.parse_args()
 
-    force_mode = args.force_diagnosis_id == "audit-only"
-    if not args.diagnosis_id and not force_mode:
-        print("ERROR: --diagnosis-id required.")
-        print("Run: python tools/diagnose.py")
-        sys.exit(2)
-    if args.apply and force_mode:
-        print("ERROR: --apply cannot be combined with --force-with-diagnosis-id=audit-only.")
-        sys.exit(2)
+    DRY_RUN = not args.apply  # noqa: N806
 
-    fixture_mode = args.state is not None
-    if args.state:
-        state_abs = os.path.abspath(args.state)
-        appdata_claude_dir = os.path.join(state_abs, "appdata", "Claude")
-        projects_dir = os.path.join(state_abs, "projects")
-    else:
-        state_abs = None
-        appdata_claude_dir, projects_dir = _default_paths()
+    # OS guard -- must run inside main() so import-time scanning doesn't crash.
+    if sys.platform != "win32":
+        print("ERROR: restore_from_vss.py is Windows-only.", file=sys.stderr)
+        sys.exit(1)
 
-    snapshot = build_snapshot(
-        appdata_claude_dir, projects_dir,
-        fixture_mode=fixture_mode,
-    )
-    current_id = make_diagnosis_id(snapshot)
+    if not _is_admin():
+        print("ERROR: This script requires administrator privileges.", file=sys.stderr)
+        print("  VSS shadow copy access is restricted to elevated processes.",
+              file=sys.stderr)
+        print("  Re-run from an elevated PowerShell prompt:", file=sys.stderr)
+        print("    Right-click PowerShell -> 'Run as administrator'", file=sys.stderr)
+        print("    py -3 tools/sessions/restore_from_vss.py", file=sys.stderr)
+        sys.exit(1)
 
-    if not force_mode and current_id != args.diagnosis_id:
-        print(
-            "ERROR: Diagnosis token mismatch.\n"
-            "  Supplied : {}\n"
-            "  Current  : {}".format(args.diagnosis_id, current_id)
-        )
-        print("State has changed since diagnose.py was last run. "
-              "Re-run: python tools/diagnose.py")
-        sys.exit(2)
+    projects_dir_arg = args.projects_dir if args.projects_dir else PROJECTS_DIR
+    drive = os.path.splitdrive(projects_dir_arg)[0]
+    if not re.fullmatch(r"[A-Za-z]:", drive or ""):
+        print(r"ERROR: projects_dir must be on a local lettered drive (e.g. C:\...).",
+              file=sys.stderr)
+        print("  VSS restore does not support UNC or relative paths.", file=sys.stderr)
+        sys.exit(1)
+    projects_dir = os.path.abspath(projects_dir_arg)
 
-    for predicate, message in KNOWN_DO_NOT_RUN:
-        try:
-            if predicate(snapshot):
-                print("REFUSED: " + message)
-                sys.exit(3)
-        except Exception:
-            pass
+    acquire_lock(LOCK_FILE, "restore_from_vss")
+    atexit.register(release_lock, LOCK_FILE)
 
-    dangling = list(_find_dangling(appdata_claude_dir, projects_dir))
-    vss_roots = _enumerate_vss_roots(projects_dir, state=state_abs)
-
-    used_diagnosis_id = args.diagnosis_id if not force_mode else "(forced-audit-only)"
-    print("Sessions with missing JSONL: {}".format(len(dangling)))
-    print("VSS shadow copies found:     {}".format(len(vss_roots)))
-    print("Diagnosis ID: {}".format(used_diagnosis_id))
+    mode_label = "DRY-RUN -- no files will be written" if DRY_RUN else "APPLY"
+    print("=== restore_from_vss  ({}) ===".format(mode_label))
+    print("  Projects dir : {}".format(projects_dir))
     print()
 
-    # Find best VSS candidate for each dangling session
-    recoverable = []
-    not_found = []
-    for meta_file, cli_sid, title, cwd in dangling:
-        best_path, _shadow_root, valid_count = _find_best_candidate(cli_sid, vss_roots)
-        if best_path and cwd:
-            slug = _slug_encode(cwd)
-            dest = os.path.join(projects_dir, slug, "{}.jsonl".format(cli_sid))
-            recoverable.append((meta_file, cli_sid, title, best_path, valid_count, dest))
-        else:
-            not_found.append((meta_file, cli_sid, title))
-
-    print("=== Recoverable from VSS ({}) ===".format(len(recoverable)))
-    for meta_file, cli_sid, title, best_path, valid_count, dest in recoverable:
-        size = os.path.getsize(best_path)
-        print("  {} {} {}".format(meta_file, cli_sid[:8], title))
-        if not args.quiet:
-            print("      source:  {}".format(_display_path(best_path, state_abs)))
-            print("      dest:    {}".format(_display_path(dest, state_abs)))
-            print("      records: {}  size: {} B".format(valid_count, size))
-
+    # [1/3] VSS availability check.
+    print("--- [1/3] Checking VSS availability ---")
+    if not _check_vss_available():
+        print("  VSS shadow storage not found or vssadmin not accessible.")
+        print("  Check that the Volume Shadow Copy service is running and shadow")
+        print("  copies are configured: vssadmin list shadowstorage")
+        sys.exit(0)
+    print("  VSS available.")
     print()
-    print("=== Not found in VSS ({}) ===".format(len(not_found)))
-    for meta_file, cli_sid, title in not_found:
-        print("  {} {} {}".format(meta_file, cli_sid[:8], title))
-    if not_found:
-        print()
-        print("  See docs/recovering-deleted-jsonls.md for other recovery options,")
-        print("  including user-configured backup search:")
-        print("    python tools/sessions/find_missing_jsonls_in_backup.py [--backup PATH]")
 
+    # [2/3] Enumerate shadow copies.
+    print("--- [2/3] Enumerating shadow copies ---")
+    shadow_copies = _enumerate_shadow_copies(projects_dir)
+    if not shadow_copies:
+        print("  No shadow copies found.")
+        print("  Shadow copies must be created before files can be restored.")
+        print("  Check System Restore or Task Scheduler shadow copy jobs.")
+        sys.exit(0)
+    print("  Found {} shadow copy/copies:".format(len(shadow_copies)))
+    for sc in shadow_copies:
+        print("    {}  {}".format(sc["install_date"], sc["device"]))
     print()
-    print("Summary: {} recoverable from VSS, {} not found.".format(
-        len(recoverable), len(not_found)
-    ))
 
-    if not recoverable:
-        return 0
+    # [3/3] Scan and select candidates.
+    print("--- [3/3] Scanning for restorable JSONLs ---")
+    candidates = _build_candidates(shadow_copies, projects_dir)
+    print()
+    _print_candidates_table(candidates)
 
-    if not args.apply:
+    if not candidates:
+        _print_reminders(dry_run=DRY_RUN)
+        sys.exit(0)
+
+    if DRY_RUN:
         print()
-        print("Dry-run -- no files written. Add --apply to restore.")
-        return 0
+        print("Dry-run complete. Re-run with --apply to restore these files.")
+        _print_reminders(dry_run=True)
+        sys.exit(0)
 
-    # --- Apply mode ---
-    if not fixture_mode and _desktop_running():
-        print()
-        print("ERROR: Claude Desktop is running.")
-        print("Quit Desktop fully before restoring (new files can conflict with")
-        print("Desktop's in-progress session state):")
-        print("  Right-click the tray icon -> Quit")
-        print('  tasklist /FI "IMAGENAME eq claude.exe"  -- must show no results')
-        sys.exit(4)
+    if _desktop_running():
+        print("ERROR: Claude Desktop is running. Quit it fully (window and tray) before",
+              file=sys.stderr)
+        print("restoring. Desktop holds session state in memory and will overwrite restored",
+              file=sys.stderr)
+        print("files on its next flush.", file=sys.stderr)
+        print('  Verify with: tasklist /FI "IMAGENAME eq claude.exe"', file=sys.stderr)
+        sys.exit(1)
 
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    log_path = os.path.join(BACKUP_DIR, "restore_from_vss_{}.log".format(today))
-
+    # Apply: copy files, preserving mtime via shutil.copy2.
+    print()
+    print("Restoring {} file(s) ...".format(len(candidates)))
     restored = 0
     skipped = 0
+    diverged = 0
     failed = 0
 
-    print()
-    print("=== Restoring ===")
-    for meta_file, cli_sid, title, best_path, valid_count, dest in recoverable:
-        if os.path.exists(dest):
-            print("  SKIP {} -- destination already present: {}".format(
-                cli_sid[:8], _display_path(dest, state_abs)))
+    for c in candidates:
+        live_path = c["live_path"]
+        shadow_path = c["shadow_path"]
+
+        # Re-check live size -- state may have changed since the scan.
+        current_live_exists = os.path.isfile(live_path)
+        current_live_size = os.path.getsize(live_path) if current_live_exists else 0
+        if c["shadow_size"] <= current_live_size:
+            print("  SKIP  {} (live copy grew since scan)".format(c["rel_path"]))
             skipped += 1
             continue
-        ok, err = _atomic_copy(best_path, dest)
-        if ok:
-            size = os.path.getsize(dest)
-            print("  RESTORED {} -> {} ({} B)".format(
-                cli_sid[:8], _display_path(dest, state_abs), size))
+
+        try:
+            if current_live_exists and not _first_bytes_match(
+                live_path, shadow_path, current_live_size
+            ):
+                print("  SKIP (diverged)  {}".format(c["rel_path"]))
+                diverged += 1
+                continue
+
+            if current_live_exists:
+                backup_path = os.path.join(BACKUP_DIR, c["rel_path"])
+                os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+                shutil.copy2(live_path, backup_path)
+                if (
+                    os.path.getsize(backup_path) != current_live_size
+                    or not _first_bytes_match(live_path, backup_path, current_live_size)
+                ):
+                    raise OSError("backup verification failed")
+
+            os.makedirs(os.path.dirname(live_path), exist_ok=True)
+            shutil.copy2(shadow_path, live_path)
+            print("  OK    {}  ({} from {})".format(
+                c["rel_path"], _fmt_size(c["shadow_size"]), c["install_date"],
+            ))
             restored += 1
-            _write_log(log_path, "RESTORED", cli_sid,
-                       _display_path(best_path, state_abs),
-                       _display_path(dest, state_abs),
-                       valid_count, size)
-        else:
-            print("  FAILED   {} -- {}".format(cli_sid[:8], err))
+        except OSError as exc:
+            print("  FAIL  {} : {}".format(c["rel_path"], exc), file=sys.stderr)
             failed += 1
-            _write_log(log_path, "FAILED", cli_sid, "", "", 0, 0, err)
 
     print()
-    print("Restore complete: {} restored, {} skipped, {} failed.".format(
-        restored, skipped, failed))
-    if restored > 0 and not fixture_mode:
-        print("Log written to: {}".format(log_path))
+    print("Restored: {}  Skipped: {}  Diverged: {}  Failed: {}  Backups: restore-backup/".format(
+        restored, skipped, diverged, failed,
+    ))
+    _print_reminders(dry_run=False)
 
-    return 0 if failed == 0 else 1
-
-
-def _write_log(log_path, status, cli_sid, src, dest, records, size, err=""):
-    try:
-        ts = datetime.now(timezone.utc).isoformat()
-        with open(log_path, "a", encoding="utf-8") as lf:
-            if status == "RESTORED":
-                lf.write("{} RESTORED {}\n  from:    {}\n  to:      {}\n"
-                         "  records: {}  size: {} B\n\n".format(
-                             ts, cli_sid, src, dest, records, size))
-            else:
-                lf.write("{} FAILED {} -- {}\n\n".format(ts, cli_sid, err))
-    except OSError:
-        pass
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

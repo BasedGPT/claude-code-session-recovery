@@ -17,10 +17,19 @@ Files written:
   - Nothing if no marker is found.
   - <cwd>/.shrink-when-safe is deleted when found.
 
-Usage (as a SessionStart hook in Claude Code settings):
-  hooks:
-    SessionStart:
-      - python /path/to/worktree_resume_rule.py
+Usage (as a SessionStart hook in .claude/settings.json):
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/absolute/path/to/tools/worktrees/worktree_resume_rule.py"
+          }
+        ]
+      }
+    ]
+  }
 """
 import os
 import sys

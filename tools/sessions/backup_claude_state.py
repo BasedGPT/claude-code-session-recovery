@@ -32,6 +32,22 @@ Task Scheduler setup (run daily):
 Usage:
   py -3 backup_claude_state.py
   py -3 backup_claude_state.py --dry-run
+
+Restoring from backup — read this first:
+  This script preserves original filesystem mtimes inside the zip. Claude Code's
+  cleanup (cleanupOldSessionFiles) deletes JSONLs based on mtime, not message
+  timestamp. If you extract this backup while cleanupPeriodDays is at its
+  default (30 days), any JSONL with an mtime older than 30 days will be
+  re-deleted on the next Claude Desktop launch.
+
+  Before extracting any backup zip:
+    1. Open ~/.claude/settings.json
+    2. Set "cleanupPeriodDays": 36500  (approximately 100 years)
+    3. Extract the zip and run synth_session_metadata.py to restore visibility
+    4. Revert cleanupPeriodDays to your preferred value once sessions are recovered
+
+  This applies to any restore method that preserves original file timestamps
+  (this script, manual zip extraction, or VSS/Time Machine restore tools).
 """
 
 import argparse

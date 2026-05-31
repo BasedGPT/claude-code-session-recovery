@@ -3,7 +3,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-> Tested against Claude Code CLI v2.1.121 on Windows 11 — 2026-05-19. Claude Desktop version v1.8089.1
+> Tested against Claude Code CLI v2.1.121 on Windows 11 — 2026-05-19. Claude Desktop version v1.8089.1. Windows MSIX (Microsoft Store) variant confirmed by community.
 
 Something broke somewhere with your sessions in Claude Desktop. Because I'm a bit special I've broken my Desktop sessions in lots of different ways. I made this to help you diagnose and hopefully fix it if something has gone wrong for you too.
 
@@ -107,6 +107,24 @@ python tools/sessions/backup_claude_state.py --dry-run   # see what would be zip
 
 Running while Desktop is open is fine — all source operations are read-only.
 
+**Before restoring from a backup zip:** set `"cleanupPeriodDays": 36500` in `~/.claude/settings.json` first. The backup preserves original file timestamps, and Claude Code's cleanup deletes JSONLs by filesystem mtime — not by message date. Any JSONL older than 30 days by mtime will be re-deleted on next launch if you restore without this step. See [docs/session-recovery.md](docs/session-recovery.md#cli-points-missing-jsonl) for the full restore sequence.
+
+---
+
+### Set `cleanupPeriodDays` high
+
+In `~/.claude/settings.json`:
+
+```json
+{
+  "cleanupPeriodDays": 36500
+}
+```
+
+This tells Claude Code to keep transcripts for approximately 100 years. The default is 30 days, which is aggressive if you want to preserve long-running project history.
+
+**Caveat:** three documented paths bypass this setting regardless of its value — SDK subagent sessions (`settingSources: []`), CLI invocations with `--setting-sources local`, and sessions where `cleanupPeriodDays` resolves to `0`. The backup covers you when the setting is bypassed.
+
 ---
 
 ### Session start watch: `tools/sessions/session_watch.py`
@@ -180,4 +198,14 @@ The full lifecycle policy — what "safe to shrink" means, how the queue works, 
 
 ---
 
-Requirements: Python 3.11+, Windows 11 (macOS supported via `--state`; native macOS paths tracked in [#4](https://github.com/BasedGPT/claude-code-session-recovery/issues/4)). No dependencies outside the standard library.
+## Complementary tools
+
+These are not part of this repo but pair well with the suite.
+
+**`claude-transcript-watch.sh`** — a `SessionStart` hook by @AiTrillium ([shared on anthropics/claude-code#62272](https://github.com/anthropics/claude-code/issues/62272#issuecomment-4584631435)) that manifests all `.jsonl` transcript files on each Desktop launch and alerts if any disappear or shrink. Catches the deletion as it happens, with the `version → version` transition pinned in the log — useful for diagnosing which update triggered a cleanup. Bash + coreutils + python3 stdlib, no external packages. Works natively on macOS and Linux; Windows requires Git Bash or WSL.
+
+A Python-native Windows equivalent is now available at [`tools/sessions/session_watch.py`](tools/sessions/session_watch.py) — see the [Session start watch](#session-start-watch-toolssessionssession_watchpy) entry in the Prevention section above.
+
+---
+
+Requirements: Python 3.11+, Windows 11 — winget and MSIX (Microsoft Store) installs both confirmed (macOS supported via `--state`; native macOS paths tracked in [#4](https://github.com/BasedGPT/claude-code-session-recovery/issues/4)). No dependencies outside the standard library.

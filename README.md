@@ -161,4 +161,14 @@ The full lifecycle policy — what "safe to shrink" means, how the queue works, 
 
 ---
 
+## Complementary tools
+
+These are not part of this repo but pair well with the suite.
+
+**`claude-transcript-watch.sh`** — a `SessionStart` hook by @AiTrillium ([shared on anthropics/claude-code#62272](https://github.com/anthropics/claude-code/issues/62272#issuecomment-4584631435)) that manifests all `.jsonl` transcript files on each Desktop launch and alerts if any disappear or shrink. Catches the deletion as it happens, with the `version → version` transition pinned in the log — useful for diagnosing which update triggered a cleanup. Bash + coreutils + python3 stdlib, no external packages. Works natively on macOS and Linux; Windows requires Git Bash or WSL.
+
+A Python-native Windows equivalent (`tools/sessions/session_watch.py`) is planned — see [#8](https://github.com/BasedGPT/claude-code-session-recovery/issues/8).
+
+---
+
 Requirements: Python 3.11+, Windows 11 — winget and MSIX (Microsoft Store) installs both confirmed (macOS supported via `--state`; native macOS paths tracked in [#4](https://github.com/BasedGPT/claude-code-session-recovery/issues/4)). No dependencies outside the standard library.

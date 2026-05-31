@@ -161,6 +161,7 @@ No definitive root cause is documented by Anthropic. Three hypotheses based on o
 1. **Old Desktop versions did not write `cliSessionId`.** Affected sessions tend to cluster in older date ranges. A version update may have changed when `cliSessionId` is set, leaving pre-upgrade sessions without it.
 2. **Partial write during a Desktop crash.** If Desktop crashed between writing the metadata file and linking the JSONL, the metadata exists but `cliSessionId` was never filled in.
 3. **Project rename or import path change.** The slug derivation happens at session start. A rename after the fact means Desktop's internal links no longer resolve.
+4. **The link field is a single point of failure.** All the failure modes above share a structural root cause: \cliSessionId\ is the only record mapping a Desktop session entry to its JSONL transcript. No secondary index, no shadow store, no fallback. Any process that nulls or corrupts that field — a crash mid-write, a startup scanner heuristic, a Desktop update, a migration gap — severs the connection permanently until repaired. The toolkit reconstructs this field; a more resilient design would maintain the link redundantly: a separate index keyed on JSONL modification time and path, or a scanner constraint that only nulls entries where the JSONL is actually absent from disk.
 
 ### Dead end: MSIX / EXDEV
 

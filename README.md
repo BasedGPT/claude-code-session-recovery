@@ -76,7 +76,7 @@ Run `python tools/diagnose.py` first — it identifies your specific problem and
 
 ## Prevention — stop it happening again
 
-The tools above repair problems after they occur. These two run proactively, so you have a clean recovery path if something goes wrong next time.
+The tools above repair problems after they occur. These run proactively, so you have a clean recovery path if something goes wrong next time.
 
 ### Weekly backup: `tools/sessions/backup_claude_state.py`
 
@@ -106,6 +106,21 @@ python tools/sessions/backup_claude_state.py --dry-run   # see what would be zip
 | Run As | your user account |
 
 Running while Desktop is open is fine — all source operations are read-only.
+
+---
+
+### Session start watch: `tools/sessions/session_watch.py`
+
+**`session_watch.py`** — a Claude Code `SessionStart` hook that detects transcript loss as it happens. On each session start it scans `~/.claude/projects/**/*.jsonl`, compares sha256, size, and mtime against the previous run's manifest, and emits a timestamped ALERT (to stderr and `watch.log`) if any transcript disappeared or shrank — including the `cleanupPeriodDays` value and the `prev → current` version transition, so you know exactly when loss occurred and whether the configured retention should have prevented it. Silent on the happy path; exits 0 always.
+
+```yaml
+# .claude/settings.json
+hooks:
+  SessionStart:
+    - python /absolute/path/to/tools/sessions/session_watch.py
+```
+
+Credit: mirrors `claude-transcript-watch.sh` by @AiTrillium ([anthropics/claude-code#62272](https://github.com/anthropics/claude-code/issues/62272)), reimplemented in Python for native Windows support.
 
 ---
 

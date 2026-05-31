@@ -20,7 +20,14 @@ Usage (SessionStart hook in .claude/settings.json):
 
   "hooks": {
     "SessionStart": [
-      {"type": "command", "command": "python /absolute/path/to/tools/sessions/session_watch.py"}
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/absolute/path/to/tools/sessions/session_watch.py"
+          }
+        ]
+      }
     ]
   }
 
@@ -257,9 +264,10 @@ def _run(
 
 
 def main() -> int:
-    # argparse.parse_args() calls sys.exit() on bad arguments (raises
-    # SystemExit, a BaseException subclass not caught by _run's except
-    # Exception). Wrapping here keeps the hook from blocking every session.
+    # argparse calls sys.exit(2) on unknown arguments, raising SystemExit
+    # (a BaseException subclass, not Exception). Catching SystemExit specifically
+    # keeps the hook from blocking every session while still allowing
+    # KeyboardInterrupt to propagate so Ctrl+C works during manual --test runs.
     try:
         parser = argparse.ArgumentParser(
             description="SessionStart hook: detect Claude transcript loss on each session start."
@@ -270,7 +278,7 @@ def main() -> int:
             help="Print what would be alerted without updating manifest or watch.log.",
         )
         args = parser.parse_args()
-    except BaseException:
+    except SystemExit:
         return 0
     return _run(
         projects_dir=_PROJECTS_DIR,

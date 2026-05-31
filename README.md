@@ -113,11 +113,22 @@ Running while Desktop is open is fine — all source operations are read-only.
 
 **`session_watch.py`** — a Claude Code `SessionStart` hook that detects transcript loss as it happens. On each session start it scans `~/.claude/projects/**/*.jsonl`, compares sha256, size, and mtime against the previous run's manifest, and emits a timestamped ALERT (to stderr and `watch.log`) if any transcript disappeared or shrank — including the `cleanupPeriodDays` value and the `prev → current` version transition, so you know exactly when loss occurred and whether the configured retention should have prevented it. Silent on the happy path; exits 0 always.
 
-```yaml
-# .claude/settings.json
-hooks:
-  SessionStart:
-    - python /absolute/path/to/tools/sessions/session_watch.py
+```json
+// .claude/settings.json — merge with existing hooks if present
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/absolute/path/to/tools/sessions/session_watch.py"
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
 
 Credit: mirrors `claude-transcript-watch.sh` by @AiTrillium ([anthropics/claude-code#62272](https://github.com/anthropics/claude-code/issues/62272)), reimplemented in Python for native Windows support.
@@ -147,11 +158,22 @@ python tools/worktrees/backfill_recovery_stubs.py --apply
 
 **`worktree_resume_rule.py`** — a Claude Code `SessionStart` hook. When you open a worktree that was queued for shrinking (has a `.shrink-when-safe` marker), it removes the marker so the shrink queue skips it. Keeps "continue working on this branch" as a first-class action — the human session always wins.
 
-```yaml
-# .claude/settings.json
-hooks:
-  SessionStart:
-    - python /absolute/path/to/tools/worktrees/worktree_resume_rule.py
+```json
+// .claude/settings.json — merge with existing hooks if present
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/absolute/path/to/tools/worktrees/worktree_resume_rule.py"
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
 
 The full lifecycle policy — what "safe to shrink" means, how the queue works, what the quarantine folder is for — is in [docs/worktree-lifecycle.md](docs/worktree-lifecycle.md).

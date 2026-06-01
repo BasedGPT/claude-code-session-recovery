@@ -208,4 +208,17 @@ A Python-native Windows equivalent is now available at [`tools/sessions/session_
 
 ---
 
+## macOS path reference
+
+The toolkit works on macOS with path adjustments. Two directories matter for diagnosis and repair:
+
+| Layer | macOS path |
+|---|---|
+| **Desktop metadata** (session index the toolkit reads and repairs) | `~/Library/Application Support/Claude/claude-code-sessions/` |
+| **Transcript files** (conversation history) | `~/.claude/projects/` |
+
+> **`IndexedDB/` is not the metadata layer.** `~/Library/Application Support/Claude/IndexedDB/` is Electron's cloud bridge store — it holds session titles and sync state for Remote Control sessions. It is separate from what the toolkit reads and cannot be repaired by these scripts. If `diagnose.py` reports nothing found, check that you're pointing it at `claude-code-sessions/` above, not `IndexedDB/`.
+
+---
+
 Requirements: Python 3.11+, Windows 11 — winget and MSIX (Microsoft Store) installs both confirmed (macOS supported via `--state`; native macOS paths tracked in [#4](https://github.com/BasedGPT/claude-code-session-recovery/issues/4)). No dependencies outside the standard library.

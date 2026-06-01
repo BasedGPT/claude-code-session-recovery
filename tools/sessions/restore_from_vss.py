@@ -41,6 +41,7 @@ import argparse
 import atexit
 import csv
 import io
+import json
 import os
 import re
 import shutil
@@ -419,6 +420,139 @@ def _print_reminders(dry_run):
 
 
 # ---------------------------------------------------------------------------
+# Fixture mode (testing only -- invoked via run_fixture_tests.py)
+# ---------------------------------------------------------------------------
+
+def _fx_slug_encode(cwd):
+    """Encode a cwd to the projects/ slug (same rule as diagnose.py _slug_encode)."""
+    out = cwd
+    for ch in (":", "\\", "/", ".", " "):
+        out = out.replace(ch, "-")
+    return out
+
+
+def _fx_count_records(path):
+    """Count non-empty lines in a JSONL file."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return sum(1 for line in fh if line.strip())
+    except OSError:
+        return 0
+
+
+def _fx_scan_sessions(state_dir):
+    """Return session dicts from state/appdata/Claude/claude-code-sessions/."""
+    sessions = []
+    appdata = os.path.join(state_dir, "appdata", "Claude", "claude-code-sessions")
+    if not os.path.isdir(appdata):
+        return sessions
+    for dirpath, _dirs, files in os.walk(appdata):
+        for fname in sorted(files):
+            if not (fname.startswith("local_") and fname.endswith(".json")):
+                continue
+            try:
+                with open(os.path.join(dirpath, fname), encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            cli_sid = data.get("cliSessionId") or data.get("sessionId", "")
+            if not cli_sid:
+                continue
+            sessions.append({
+                "meta_file": fname,
+                "cli_session_id": cli_sid,
+                "short_id": cli_sid[:8],
+                "title": data.get("title", "(no title)"),
+                "cwd_slug": _fx_slug_encode(data.get("cwd", "")),
+            })
+    return sessions
+
+
+def _fx_find_in_shadows(cli_session_id, cwd_slug, shadow_dirs):
+    """Search fixture shadow dirs for cli_session_id.jsonl. Returns dict or None."""
+    target = cli_session_id + ".jsonl"
+    for shadow_dir in shadow_dirs:
+        candidate = os.path.join(shadow_dir, "projects", cwd_slug, target)
+        if os.path.isfile(candidate):
+            shadow_name = os.path.basename(shadow_dir)
+            return {
+                "shadow_path": candidate,
+                "source_rel": os.path.join("vss", shadow_name, "projects", cwd_slug, target),
+                "dest_rel": os.path.join("projects", cwd_slug, target),
+                "records": _fx_count_records(candidate),
+                "size": os.path.getsize(candidate),
+            }
+    return None
+
+
+def _run_fixture_mode(state_dir, diagnosis_id, apply_mode):
+    """Execute in fixture mode: reads state/ tree, skips OS/admin/VSS checks."""
+    vss_dir = os.path.join(state_dir, "vss")
+    shadow_dirs = (
+        sorted(
+            os.path.join(vss_dir, n) for n in os.listdir(vss_dir)
+            if os.path.isdir(os.path.join(vss_dir, n))
+        )
+        if os.path.isdir(vss_dir) else []
+    )
+
+    sessions = _fx_scan_sessions(state_dir)
+    projects_dir = os.path.join(state_dir, "projects")
+
+    dangling = [
+        s for s in sessions
+        if not os.path.isfile(
+            os.path.join(projects_dir, s["cwd_slug"], s["cli_session_id"] + ".jsonl")
+        )
+    ]
+
+    print("Sessions with missing JSONL: {}".format(len(dangling)))
+    print("VSS shadow copies found:     {}".format(len(shadow_dirs)))
+    print("Diagnosis ID: {}".format(diagnosis_id or "(none)"))
+    print()
+
+    recoverable = []
+    not_found = []
+    for s in dangling:
+        match = _fx_find_in_shadows(s["cli_session_id"], s["cwd_slug"], shadow_dirs)
+        if match:
+            recoverable.append((s, match))
+        else:
+            not_found.append(s)
+
+    print("=== Recoverable from VSS ({}) ===".format(len(recoverable)))
+    for s, m in recoverable:
+        print("  {} {} {}".format(s["meta_file"], s["short_id"], s["title"]))
+        print("      source:  {}".format(m["source_rel"]))
+        print("      dest:    {}".format(m["dest_rel"]))
+        print("      records: {}  size: {}".format(m["records"], _fmt_size(m["size"])))
+    print()
+    print("=== Not found in VSS ({}) ===".format(len(not_found)))
+    if not_found:
+        for s in not_found:
+            print("  {} {} {}".format(s["meta_file"], s["short_id"], s["title"]))
+        print()
+        print("  See docs/recovering-deleted-jsonls.md for other recovery options,")
+        print("  including user-configured backup search:")
+        print("    python tools/sessions/find_missing_jsonls_in_backup.py [--backup PATH]")
+    print()
+    print("Summary: {} recoverable from VSS, {} not found.".format(
+        len(recoverable), len(not_found),
+    ))
+
+    if not apply_mode and recoverable:
+        print()
+        print("Dry-run -- no files written. Add --apply to restore.")
+        return
+
+    if apply_mode:
+        for s, m in recoverable:
+            dest = os.path.join(projects_dir, s["cwd_slug"], s["cli_session_id"] + ".jsonl")
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(m["shadow_path"], dest)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -446,7 +580,19 @@ def main():
         "--projects-dir", metavar="PATH", default=None, dest="projects_dir",
         help="Override the default ~/.claude/projects/ path (for testing).",
     )
+    ap.add_argument(
+        "--state", metavar="PATH", default=None,
+        help="Fixture state directory for testing (bypasses OS/admin/VSS checks).",
+    )
+    ap.add_argument(
+        "--diagnosis-id", metavar="HEX", default=None, dest="diagnosis_id",
+        help="Diagnosis ID to display in fixture mode output.",
+    )
     args = ap.parse_args()
+
+    if args.state is not None:
+        _run_fixture_mode(os.path.abspath(args.state), args.diagnosis_id, args.apply)
+        sys.exit(0)
 
     DRY_RUN = not args.apply  # noqa: N806
 

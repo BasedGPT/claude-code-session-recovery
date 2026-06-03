@@ -1,0 +1,3 @@
+# Force LF on JSONL files — byte-count assertions in fixture tests depend on stable sizes.
+# Without this, core.autocrlf=true on Windows CI inflates sizes by 1 byte per line.
+*.jsonl text eol=lf

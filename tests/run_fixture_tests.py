@@ -48,7 +48,7 @@ def _show_text_diff(label, expected, actual):
     for i, (e, a) in enumerate(zip(exp_lines, act_lines)):
         if e != a:
             print("    Line {}: expected {!r}".format(i + 1, e))
-            print("            got      {!r}".format(i + 1, a))
+            print("            got      {!r}".format(a))
     if len(act_lines) != len(exp_lines):
         print("    Line count: expected {}, got {}".format(
             len(exp_lines), len(act_lines)

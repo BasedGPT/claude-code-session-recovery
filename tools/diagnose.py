@@ -277,11 +277,13 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         cli_version = None
         desktop_running = False
         running_inside_desktop = False
+        install_type = None
     else:
         desktop_version = _detect_desktop_version()
         cli_version = _detect_cli_version()
         desktop_running = _detect_desktop_running()
         running_inside_desktop = _detect_running_inside_desktop() if desktop_running else False
+        install_type = _detect_install_type()
 
     return {
         "total_metadata_count": total,
@@ -300,6 +302,7 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         "cli_version": cli_version,
         "desktop_running": desktop_running,
         "running_inside_desktop": running_inside_desktop,
+        "install_type": install_type,
     }
 
 
@@ -393,6 +396,44 @@ def _detect_desktop_running():
         return "claude.exe" in result.stdout.lower()
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def _detect_install_type():
+    """Detect whether Claude Desktop is installed as MSIX (Store) or EXE.
+
+    On MSIX installs, %APPDATA%\\Claude is a reparse point (junction)
+    pointing into the sandboxed package store at:
+    %LOCALAPPDATA%\\Packages\\Claude_<hash>\\LocalCache\\Roaming\\Claude\\
+
+    On EXE (winget) installs, %APPDATA%\\Claude is a regular directory.
+
+    Community finding (2026-06-03, issue #63904 on anthropics/claude-code):
+    Python scripts can read and write to the real MSIX package path, but
+    Claude Desktop maintains an internal session index that takes precedence
+    over files written externally. repair_session_metadata.py and
+    synth_session_metadata.py will not reliably surface sessions on MSIX.
+    diagnose.py (read-only) works on both install types.
+
+    Returns: 'msix', 'exe', 'not_windows', or 'unknown'
+    """
+    if platform.system() != "Windows":
+        return "not_windows"
+    appdata = os.environ.get("APPDATA", "")
+    claude_appdata = os.path.join(appdata, "Claude")
+    if not os.path.exists(claude_appdata):
+        return "unknown"
+    try:
+        real = os.path.realpath(claude_appdata)
+        if os.path.normcase(real) != os.path.normcase(claude_appdata):
+            # It resolves to a different path — it's a junction/reparse point.
+            # MSIX package paths always contain 'packages' and 'claude_'.
+            real_lower = real.lower()
+            if "packages" in real_lower and "claude_" in real_lower:
+                return "msix"
+            return "unknown"  # junction to somewhere unexpected
+    except OSError:
+        pass
+    return "exe"
 
 
 def _detect_running_inside_desktop():
@@ -568,6 +609,17 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None):
             lines.append('    tasklist /FI "IMAGENAME eq claude.exe"')
         lines.append("")
 
+    if snapshot.get("install_type") == "msix":
+        lines.append("NOTE: Microsoft Store (MSIX) install detected.")
+        lines.append("  diagnose.py is read-only and works correctly on MSIX.")
+        lines.append("  The write-bearing repair scripts (repair_session_metadata.py,")
+        lines.append("  synth_session_metadata.py) are unlikely to surface sessions on")
+        lines.append("  an MSIX install: Desktop maintains an internal index that takes")
+        lines.append("  precedence over files written externally, regardless of write")
+        lines.append("  access to the real package path. Community-confirmed 2026-06-03.")
+        lines.append("  See README.md for details.")
+        lines.append("")
+
     if not schema_ok:
         lines.append("State layout not in supported fixture set. Audit-only mode.")
         lines.append("No repair commands will be suggested for this state.")
@@ -688,6 +740,7 @@ def main():
                 "windows": "11",
             },
             "schema_probe": snapshot["schema_version"],
+            "install_type": snapshot.get("install_type"),
             "desktop_running": snapshot["desktop_running"],
             "matched_problems": [
                 {

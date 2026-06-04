@@ -3,7 +3,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-> Tested against Claude Code CLI v2.1.121 on Windows 11 — 2026-05-19. Claude Desktop version v1.8089.1. Windows MSIX (Microsoft Store) variant confirmed by community.
+> Tested against Claude Code CLI v2.1.121 on Windows 11 — 2026-05-19. Claude Desktop version v1.8089.1. macOS confirmed by community (path adjustments only). Windows MSIX (Microsoft Store) install: `diagnose.py` works; write-bearing repair scripts do not — see [MSIX note](#msix-microsoft-store-installs) below.
 
 Something broke somewhere with your sessions in Claude Desktop. Because I'm a bit special I've broken my Desktop sessions in lots of different ways. I made this to help you diagnose and hopefully fix it if something has gone wrong for you too.
 
@@ -71,6 +71,16 @@ Run `python tools/diagnose.py` first — it identifies your specific problem and
 | One project, two sets of sessions | `python tools/diagnose.py` | [session-recovery.md#junction-realpath-slug-mismatch](docs/session-recovery.md#junction-realpath-slug-mismatch) |
 | Sessions missing from Desktop session list | `python tools/diagnose.py` | [session-recovery.md#orphan-jsonl-no-metadata](docs/session-recovery.md#orphan-jsonl-no-metadata) |
 | Group assignments wiped or missing after Desktop update | `python tools/groupings/list_groupings.py` | [architecture.md#session-grouping-layer](docs/architecture.md#session-grouping-layer) — read-only diagnostic; no automated fix |
+
+---
+
+## MSIX (Microsoft Store) installs
+
+`diagnose.py` is read-only and works correctly on MSIX installs — it reads files directly from the real package path and gives an accurate picture of session state.
+
+The write-bearing scripts (`repair_session_metadata.py`, `synth_session_metadata.py`) **will not reliably surface sessions** on an MSIX install. Claude Desktop on MSIX maintains an internal session index that takes precedence over metadata files written externally. Write access to the real package path (`%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\`) is available to Python scripts — but Desktop overwrites externally set values (title, timestamps, `completedTurns`) on restart and does not load transcripts from external metadata entries. Community-confirmed 2026-06-03.
+
+`diagnose.py` detects the install type automatically and prints this note if MSIX is found. The EXE (winget) installer does not have this limitation.
 
 ---
 
@@ -221,4 +231,4 @@ The toolkit works on macOS with path adjustments. Two directories matter for dia
 
 ---
 
-Requirements: Python 3.11+, Windows 11 — winget and MSIX (Microsoft Store) installs both confirmed (macOS supported via `--state`; native macOS paths tracked in [#4](https://github.com/BasedGPT/claude-code-session-recovery/issues/4)). No dependencies outside the standard library.
+Requirements: Python 3.11+. Windows 11 EXE (winget) install: full support. Windows MSIX (Microsoft Store) install: `diagnose.py` only — write-bearing scripts do not work (see [MSIX note](#msix-microsoft-store-installs)). macOS: community-confirmed with path adjustments; native macOS paths tracked in [#4](https://github.com/BasedGPT/claude-code-session-recovery/issues/4). No dependencies outside the standard library.

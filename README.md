@@ -74,6 +74,20 @@ Run `python tools/diagnose.py` first — it identifies your specific problem and
 
 ---
 
+## Known patterns
+
+### `transcriptUnavailable: true` — startup scanner regression (cross-platform)
+
+The Desktop startup scanner can remove `cliSessionId` from metadata files and set `transcriptUnavailable: true`, even when the transcript file is intact on disk. Sessions affected by this show in the sidebar with title and folder intact but open with no conversation history.
+
+This was originally documented for macOS Desktop 2.1.144+ but is confirmed on Windows (Claude Code desktop v1.11187.1, 2026-06-04). Treat it as cross-platform.
+
+`diagnose.py` surfaces affected sessions. `repair_session_metadata.py --apply` backfills the `cliSessionId` link and removes the flag.
+
+**Note on bridged/cloud sessions:** one reporter observed that sessions "bridged to remote/cloud" showed this pattern at a higher rate than local sessions. Working hypothesis: bridged sessions may not write a local `.jsonl`, so the scanner finds no file to match and sets the flag. If confirmed, those sessions would not be recoverable via disk repair — the transcript was never local. `diagnose.py` will tell you whether a `.jsonl` exists for each affected session before you run any repair.
+
+---
+
 ## MSIX (Microsoft Store) installs
 
 `diagnose.py` is read-only and works correctly on MSIX installs — it reads files directly from the real package path and gives an accurate picture of session state.

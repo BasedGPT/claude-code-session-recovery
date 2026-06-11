@@ -86,6 +86,12 @@ This was originally documented for macOS Desktop 2.1.144+ but is confirmed on Wi
 
 **Note on bridged/cloud sessions:** one reporter observed that sessions "bridged to remote/cloud" showed this pattern at a higher rate than local sessions. Working hypothesis: bridged sessions may not write a local `.jsonl`, so the scanner finds no file to match and sets the flag. If confirmed, those sessions would not be recoverable via disk repair — the transcript was never local. `diagnose.py` will tell you whether a `.jsonl` exists for each affected session before you run any repair.
 
+### VSS recovery and NTFS junctions
+
+`restore_from_vss.py` searches Windows VSS (Volume Shadow Copy) snapshots automatically when the `cli-points-missing-jsonl` symptom is detected. There is one configuration where VSS finds nothing: if `~/.claude` is redirected via an NTFS junction to a cloud drive — for example `C:\Users\You\.claude` → `D:\Dropbox\.claude` — VSS snapshots follow the junction target. The shadows reflect the cloud-drive folder, not the state of `~/.claude` before the junction existed.
+
+In this setup, check the cloud provider's own version history instead. The junction target folder is versioned by Dropbox, OneDrive, or whatever service it points at.
+
 ---
 
 ## MSIX (Microsoft Store) installs

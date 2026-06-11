@@ -88,7 +88,7 @@ This was originally documented for macOS Desktop 2.1.144+ but is confirmed on Wi
 
 ### VSS recovery and NTFS junctions
 
-`restore_from_vss.py` searches Windows VSS (Volume Shadow Copy) snapshots automatically when the `cli-points-missing-jsonl` symptom is detected. There is one configuration where VSS finds nothing: if `~/.claude` is redirected via an NTFS junction to a cloud drive — for example `C:\Users\You\.claude` → `D:\Dropbox\.claude` — VSS snapshots follow the junction target. The shadows reflect the cloud-drive folder, not the state of `~/.claude` before the junction existed.
+`restore_from_vss.py` searches Windows VSS (Volume Shadow Copy) snapshots automatically when the `cli-points-missing-jsonl` symptom is detected. There is one configuration where VSS finds nothing: if `~/.claude` is redirected via an NTFS junction to a cloud drive — for example `C:\Users\<username>\.claude` → `D:\Dropbox\.claude` — VSS snapshots follow the junction target. The shadows reflect the cloud-drive folder, not the state of `~/.claude` before the junction existed.
 
 In this setup, check the cloud provider's own version history instead. The junction target folder is versioned by Dropbox, OneDrive, or whatever service it points at.
 

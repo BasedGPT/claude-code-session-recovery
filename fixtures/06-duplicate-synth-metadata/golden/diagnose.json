@@ -6,6 +6,7 @@
     "windows": "11"
   },
   "schema_probe": "recognised",
+  "install_type": null,
   "desktop_running": false,
   "matched_problems": [
     {
@@ -41,6 +42,7 @@
     "desktop_version": null,
     "cli_version": null,
     "desktop_running": false,
-    "running_inside_desktop": false
+    "running_inside_desktop": false,
+    "install_type": null
   }
 }

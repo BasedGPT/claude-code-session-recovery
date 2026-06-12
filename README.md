@@ -98,7 +98,7 @@ In this setup, check the cloud provider's own version history instead. The junct
 
 `diagnose.py` is read-only and works correctly on MSIX installs — it reads files directly from the real package path and gives an accurate picture of session state.
 
-The write-bearing scripts (`repair_session_metadata.py`, `synth_session_metadata.py`) **will not reliably surface sessions** on an MSIX install. Claude Desktop on MSIX maintains an internal session index that takes precedence over metadata files written externally. Write access to the real package path (`%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\`) is available to Python scripts — but Desktop overwrites externally set values (title, timestamps, `completedTurns`) on restart and does not load transcripts from external metadata entries. Community-confirmed 2026-06-03.
+The write-bearing scripts (`repair_session_metadata.py`, `synth_session_metadata.py`) **will not surface sessions** on an MSIX install. Claude Desktop on MSIX maintains an internal session index that takes precedence over metadata files written externally. Write access to the real package path (`%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\`) is available to Python scripts, but write access is not sufficient — a full 24-entry synthesis pass confirmed zero errors and no Desktop change (community-confirmed 2026-06-10). Desktop does not load transcripts from external metadata entries and overwrites externally set values (title, timestamps, `completedTurns`) on restart.
 
 `diagnose.py` detects the install type automatically and prints this note if MSIX is found. The EXE (winget) installer does not have this limitation.
 
@@ -107,6 +107,8 @@ The write-bearing scripts (`repair_session_metadata.py`, `synth_session_metadata
 ## Prevention — stop it happening again
 
 The tools above repair problems after they occur. These run proactively, so you have a clean recovery path if something goes wrong next time.
+
+**Two directories matter.** A complete backup needs both `%APPDATA%\Claude\claude-code-sessions\` (Desktop metadata — the session index) and `~\.claude\projects\` (transcript files — conversation history). Backing up transcripts alone leaves you with orphaned `.jsonl` files that won't appear in the Desktop sidebar; you'd need to run `synth_session_metadata.py` on top of the restore to link them. The `backup_claude_state.py` script below covers both layers automatically.
 
 ### Weekly backup: `tools/sessions/backup_claude_state.py`
 
@@ -235,6 +237,8 @@ These are not part of this repo but pair well with the suite.
 **`claude-transcript-watch.sh`** — a `SessionStart` hook by @AiTrillium ([shared on anthropics/claude-code#62272](https://github.com/anthropics/claude-code/issues/62272#issuecomment-4584631435)) that manifests all `.jsonl` transcript files on each Desktop launch and alerts if any disappear or shrink. Catches the deletion as it happens, with the `version → version` transition pinned in the log — useful for diagnosing which update triggered a cleanup. Bash + coreutils + python3 stdlib, no external packages. Works natively on macOS and Linux; Windows requires Git Bash or WSL.
 
 A Python-native Windows equivalent is now available at [`tools/sessions/session_watch.py`](tools/sessions/session_watch.py) — see the [Session start watch](#session-start-watch-toolssessionssession_watchpy) entry in the Prevention section above.
+
+**`clean-my-agent`** by [@blain3white](https://github.com/blain3white/clean-my-agent) — on-demand backup of `~/.claude/projects/` JSONLs to a timestamped local copy. Covers the transcript layer only — if you lose both transcripts and metadata (as in the `cleanupPeriodDays` bypass bug), restore the transcripts first, then run `synth_session_metadata.py` to rebuild the metadata layer before restarting Desktop.
 
 ---
 

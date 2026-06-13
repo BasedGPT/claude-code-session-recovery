@@ -199,6 +199,7 @@ def _scan_vscode_dropped_sessions(projects_dir):
     try:
         import sqlite3 as _sqlite3
         import re as _re
+        import pathlib as _pathlib
     except ImportError:
         return 0, 0
 
@@ -230,7 +231,8 @@ def _scan_vscode_dropped_sessions(projects_dir):
         if not os.path.isfile(db_path):
             continue
         try:
-            conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            db_uri = _pathlib.Path(db_path).resolve().as_uri() + "?mode=ro"
+            conn = _sqlite3.connect(db_uri, uri=True)
             try:
                 cur = conn.execute(
                     "SELECT value FROM ItemTable WHERE key='agentSessions.model.cache'"

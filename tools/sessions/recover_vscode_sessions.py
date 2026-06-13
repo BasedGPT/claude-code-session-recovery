@@ -26,8 +26,8 @@ Files read:
 Files written (with --apply only):
   - %APPDATA%\\Code\\User\\workspaceStorage\\*\\state.vscdb
     (agentSessions.model.cache updated in-place)
-  - ./vscode-cache-backup-<WSID>-<timestamp>.json
-    (backup of original model.cache written alongside this script)
+  - ./repair-backup/vscode-cache-backup-<WSID>-<timestamp>.json
+    (backup of original model.cache; directory created if absent)
 
 Usage:
     python tools/sessions/recover_vscode_sessions.py
@@ -39,6 +39,7 @@ import argparse
 import glob
 import json
 import os
+import pathlib
 import platform
 import re
 import sqlite3
@@ -50,6 +51,12 @@ _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+
+# Timestamps outside this range are treated as corrupt; fall back to now_ms.
+_TS_MIN_MS = 1577836800000  # 2020-01-01 UTC
+
+# Windows process names that write state.vscdb (checked case-insensitively).
+_VSCODE_PROCESSES_WIN = ["Code.exe", "Code - Insiders.exe", "VSCodium.exe"]
 
 # ---------------------------------------------------------------------------
 # Platform paths
@@ -77,20 +84,26 @@ def _default_projects_dir():
 # ---------------------------------------------------------------------------
 
 def _vscode_running():
-    """Return True if VS Code appears to be running."""
+    """Return True if any known VS Code variant appears to be running."""
     sys_name = platform.system()
     if sys_name == "Windows":
         try:
             result = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq Code.exe"],
+                ["tasklist", "/FO", "CSV"],
                 capture_output=True, text=True, timeout=10, check=False,
             )
-            return "code.exe" in result.stdout.lower()
+            output_lower = result.stdout.lower()
+            # CSV format wraps each name in quotes; match on the quoted name so
+            # we don't false-positive on path fragments containing these strings.
+            return any(
+                f'"{proc.lower()}"' in output_lower
+                for proc in _VSCODE_PROCESSES_WIN
+            )
         except Exception:
             return False
     else:
-        # macOS / Linux: look for VS Code Electron helper process
-        for pattern in ("Code Helper", "Visual Studio Code"):
+        # macOS / Linux: look for VS Code / VSCodium Electron helper processes.
+        for pattern in ("Code Helper", "Visual Studio Code", "VSCodium"):
             try:
                 result = subprocess.run(
                     ["pgrep", "-f", pattern],
@@ -119,8 +132,11 @@ def _find_claude_dbs(workspace_dir):
         db_path = os.path.join(workspace_dir, wsid, "state.vscdb")
         if not os.path.isfile(db_path):
             continue
+        # Use pathlib.as_uri() so reserved URI characters (e.g. '#') in the
+        # path are percent-encoded; bare f"file:{db_path}" breaks on such paths.
+        db_uri = pathlib.Path(db_path).resolve().as_uri() + "?mode=ro"
         try:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn = sqlite3.connect(db_uri, uri=True)
             try:
                 cur = conn.execute(
                     "SELECT value FROM ItemTable WHERE key='agentSessions.model.cache'"
@@ -229,6 +245,11 @@ def _read_session_meta(jsonl_path):
 
 def _make_cache_entry(sid, title, created_ms, now_ms):
     label = title or sid
+    ts_max = now_ms + 24 * 60 * 60 * 1000  # accept up to 24 h in the future
+    if created_ms is not None and _TS_MIN_MS <= created_ms <= ts_max:
+        timing_created = created_ms
+    else:
+        timing_created = now_ms
     return {
         "providerType": "claude-code",
         "providerLabel": "Claude",
@@ -238,7 +259,7 @@ def _make_cache_entry(sid, title, created_ms, now_ms):
         "tooltip": f"Claude Code session: {label}",
         "status": 1,
         "timing": {
-            "created": created_ms or now_ms,
+            "created": timing_created,
             "lastRequestEnded": now_ms,
         },
     }
@@ -248,10 +269,11 @@ def _make_cache_entry(sid, title, created_ms, now_ms):
 # Backup helpers
 # ---------------------------------------------------------------------------
 
-def _backup_path(db_path, wsid, timestamp_s):
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+def _backup_path(wsid, timestamp_s):
+    backup_dir = os.path.join(os.getcwd(), "repair-backup")
+    os.makedirs(backup_dir, exist_ok=True)
     fname = f"vscode-cache-backup-{wsid[:8]}-{timestamp_s}.json"
-    return os.path.join(script_dir, fname)
+    return os.path.join(backup_dir, fname)
 
 
 def _write_backup(backup_path, wsid, db_path, cache):
@@ -264,16 +286,70 @@ def _write_backup(backup_path, wsid, db_path, cache):
 # Apply
 # ---------------------------------------------------------------------------
 
-def _apply_recovery(db_path, new_cache):
-    """Write the new model.cache back to state.vscdb."""
-    new_value = json.dumps(new_cache)
-    conn = sqlite3.connect(db_path)
+def _apply_recovery(db_path, new_entries):
+    """Merge new_entries into the live model.cache and write back.
+
+    Opens a BEGIN IMMEDIATE transaction so the read-modify-write is atomic
+    against any concurrent writer. Re-reads the current cache rather than
+    using the scan-time snapshot, so entries added by VS Code between scan
+    and apply are preserved.
+
+    Returns (pre_write_cache, added_count, total_count).
+    Raises RuntimeError if the key is missing or the UPDATE hits ≠1 row.
+    """
+    conn = sqlite3.connect(db_path, isolation_level=None)  # manual transaction
     try:
-        conn.execute(
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT value FROM ItemTable WHERE key='agentSessions.model.cache'"
+        ).fetchone()
+        if not row or not row[0]:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(
+                f"agentSessions.model.cache not found in {db_path!r} — "
+                "key may have been deleted since the scan"
+            )
+        try:
+            current_cache = json.loads(row[0])
+        except (json.JSONDecodeError, TypeError) as exc:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(
+                f"Cache JSON unreadable in {db_path!r}: {exc}"
+            ) from exc
+
+        # Build the UUID set already present in the live cache.
+        existing_uuids = {
+            e.get("resource", "")[len("claude-code:/"):].lower()
+            for e in current_cache
+            if isinstance(e, dict)
+            and e.get("resource", "").startswith("claude-code:/")
+        }
+        to_add = [
+            e for e in new_entries
+            if e.get("resource", "")[len("claude-code:/"):].lower()
+            not in existing_uuids
+        ]
+        merged = current_cache + to_add
+
+        cur = conn.execute(
             "UPDATE ItemTable SET value=? WHERE key='agentSessions.model.cache'",
-            (new_value,),
+            (json.dumps(merged),),
         )
-        conn.commit()
+        if cur.rowcount != 1:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(
+                f"UPDATE matched {cur.rowcount} row(s) in {db_path!r} — expected 1"
+            )
+        conn.execute("COMMIT")
+        return current_cache, len(to_add), len(merged)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise RuntimeError(f"Failed to apply recovery to {db_path!r}: {exc}") from exc
     finally:
         conn.close()
 
@@ -404,17 +480,28 @@ def main():
 
     # --- Apply to each DB ---
     timestamp_s = str(int(time.time()))
-    for db_path, wsid, cache in dbs:
-        backup_file = _backup_path(db_path, wsid, timestamp_s)
-        _write_backup(backup_file, wsid, db_path, cache)
-        print(f"Backup written: {backup_file}")
+    for db_path, wsid, _scan_cache in dbs:
+        try:
+            pre_write_cache, added, total = _apply_recovery(db_path, new_entries)
+        except RuntimeError as exc:
+            print(f"ERROR [{wsid[:8]}...]: {exc}")
+            continue
 
-        combined = cache + new_entries
-        _apply_recovery(db_path, combined)
-        print(
-            f"Injected {len(new_entries)} entry/entries into [{wsid[:8]}...] — "
-            f"{len(combined)} total entries in cache."
-        )
+        # Backup captures the pre-write state returned from inside the transaction.
+        backup_file = _backup_path(wsid, timestamp_s)
+        _write_backup(backup_file, wsid, db_path, pre_write_cache)
+        print(f"Backup written : {backup_file}")
+        if added < len(new_entries):
+            skipped = len(new_entries) - added
+            print(
+                f"Injected {added} entry/entries into [{wsid[:8]}...] — "
+                f"{skipped} already present — {total} total in cache."
+            )
+        else:
+            print(
+                f"Injected {added} entry/entries into [{wsid[:8]}...] — "
+                f"{total} total in cache."
+            )
 
     print()
     print("Done. Restart VS Code and check Local -> Session History.")

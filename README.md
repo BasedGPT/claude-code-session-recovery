@@ -142,9 +142,9 @@ python tools/sessions/recover_vscode_sessions.py          # dry-run: shows what 
 python tools/sessions/recover_vscode_sessions.py --apply  # writes changes (VS Code must be closed)
 ```
 
-**Requirements:** VS Code must be fully closed before running with `--apply`. The script checks for a running VS Code process and exits with an error if one is found. After running, restart VS Code and the recovered sessions should appear in the sidebar.
+**Requirements:** VS Code (including Insiders and VSCodium) must be fully closed before running with `--apply`. The script checks for known VS Code processes and exits with an error if any are found. After running, restart VS Code and the recovered sessions should appear in the sidebar.
 
-**Backups:** before writing, the script saves the original `agentSessions.model.cache` value to a JSON file alongside the script. To roll back: open the backup JSON and restore the `original_cache` value into the database.
+**Backups:** before writing, the script saves the original `agentSessions.model.cache` value to a JSON file in `repair-backup/` under the current working directory (created if absent). To roll back: open the backup JSON and restore the `original_cache` value into the database.
 
 **Scope:** the script targets all Claude Code-aware workspace databases under the VS Code workspace storage directory — so sessions are recovered regardless of which workspace folder you open.
 

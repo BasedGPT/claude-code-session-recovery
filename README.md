@@ -3,7 +3,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-> Tested against Claude Code CLI v2.1.121 on Windows 11 — 2026-05-19. Claude Desktop version v1.8089.1. macOS confirmed by community (path adjustments only). Windows MSIX (Microsoft Store) install: `diagnose.py` works; write-bearing repair scripts do not — see [MSIX note](#msix-microsoft-store-installs) below.
+> Supports Windows and macOS. Windows MSIX (Microsoft Store) install: `diagnose.py` works; write-bearing repair scripts do not — see [MSIX note](#msix-microsoft-store-installs) below.
 
 Something broke somewhere with your sessions in Claude Desktop. Because I'm a bit special I've broken my Desktop sessions in lots of different ways. I made this to help you diagnose and hopefully fix it if something has gone wrong for you too.
 
@@ -281,4 +281,4 @@ The toolkit works on macOS with path adjustments. Two directories matter for dia
 
 ---
 
-Requirements: Python 3.11+. Windows 11 EXE (winget) install: full support. Windows MSIX (Microsoft Store) install: `diagnose.py` only — write-bearing scripts do not work (see [MSIX note](#msix-microsoft-store-installs)). macOS: community-confirmed with path adjustments; native macOS paths tracked in [#4](https://github.com/BasedGPT/claude-code-session-recovery/issues/4). No dependencies outside the standard library.
+Requirements: Python 3.11+. Windows and macOS: full support. Windows MSIX (Microsoft Store) install: `diagnose.py` only — write-bearing scripts do not work (see [MSIX note](#msix-microsoft-store-installs)). No dependencies outside the standard library.

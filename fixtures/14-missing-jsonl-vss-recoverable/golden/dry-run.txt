@@ -1,6 +1,6 @@
 Sessions with missing JSONL: 2
 VSS shadow copies found:     2
-Diagnosis ID: 1d0266f9
+Diagnosis ID: 555b5dde
 
 === Recoverable from VSS (2) ===
   local_01.json f1xe1414 Fixture 14 session 1

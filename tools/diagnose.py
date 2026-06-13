@@ -146,6 +146,44 @@ def _cwd_type(cwd):
     return "canonical"
 
 
+def _detect_mapped_drive_slugs(projects_dir):
+    """Count project slug dirs whose drive letter resolves to a UNC/network path.
+
+    On Windows, the CLI writes project slugs using the literal drive-letter cwd
+    (e.g. N:\\path\\to\\project -> n--path-to-project). The VS Code extension calls
+    Node's fs.realpath(), which resolves mapped drive letters to their UNC paths
+    (\\\\server\\share\\...) and derives a different slug. The two lookup paths
+    disagree, so the extension's session history sidebar shows nothing even though
+    sessions exist on disk and the CLI finds them correctly.
+
+    Returns (count, affected_drives) where:
+      count           -- number of slug directories on mapped drives
+      affected_drives -- sorted list of affected drive letters (uppercase)
+    """
+    if platform.system() != "Windows":
+        return 0, []
+    if not os.path.isdir(projects_dir):
+        return 0, []
+    affected_drives = set()
+    for slug in os.listdir(projects_dir):
+        slug_dir = os.path.join(projects_dir, slug)
+        if not os.path.isdir(slug_dir):
+            continue
+        # Drive-letter slugs: single alpha letter followed by "--"
+        if len(slug) >= 3 and slug[1:3] == "--" and slug[0].isalpha():
+            drive_letter = slug[0].upper()
+            drive_root = drive_letter + ":\\"
+            try:
+                real = os.path.realpath(drive_root)
+                # A UNC path (\\server\...) means this drive letter maps to a
+                # network share — the VS Code extension will resolve to the UNC form.
+                if real.startswith("\\\\"):
+                    affected_drives.add(drive_letter)
+            except OSError:
+                pass
+    return len(affected_drives), sorted(affected_drives)
+
+
 # ---------------------------------------------------------------------------
 # Snapshot builder
 # ---------------------------------------------------------------------------
@@ -270,6 +308,8 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
                 schema_version = "recognised"
                 break
 
+    mapped_drive_count, mapped_drive_letters = _detect_mapped_drive_slugs(projects_dir)
+
     # Desktop version, CLI version, and process state are skipped in fixture mode
     # so that golden outputs are deterministic regardless of environment.
     if fixture_mode:
@@ -303,6 +343,8 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         "desktop_running": desktop_running,
         "running_inside_desktop": running_inside_desktop,
         "install_type": install_type,
+        "mapped_drive_unc_mismatch_count": mapped_drive_count,
+        "mapped_drive_affected_drives": mapped_drive_letters,
     }
 
 
@@ -502,6 +544,7 @@ def make_diagnosis_id(snapshot):
         "cwd_prefix_types",
         "jsonl_count",
         "schema_version",
+        "mapped_drive_unc_mismatch_count",
     )
     structural = {k: snapshot[k] for k in structural_keys if k in snapshot}
     canonical = json.dumps(structural, sort_keys=True, separators=(",", ":"))
@@ -618,6 +661,22 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None):
         lines.append("  precedence over files written externally, regardless of write")
         lines.append("  access to the real package path. Community-confirmed 2026-06-03.")
         lines.append("  See README.md for details.")
+        lines.append("")
+
+    if snapshot.get("mapped_drive_unc_mismatch_count", 0) > 0:
+        drives = snapshot.get("mapped_drive_affected_drives", [])
+        drive_label = "drives" if len(drives) > 1 else "drive"
+        drives_str = ", ".join(f"{d}:\\" for d in drives)
+        lines.append(f"NOTE: Mapped network {drive_label} detected ({drives_str}).")
+        lines.append("  Project slugs under these drive letters won't appear in the VS Code")
+        lines.append("  extension's session history sidebar. The extension resolves drive letters")
+        lines.append("  to UNC paths (\\\\server\\share\\...) and derives a different slug — one that")
+        lines.append("  doesn't exist on disk. The Desktop app and CLI are not affected.")
+        lines.append("")
+        lines.append("  To fix the VS Code extension sidebar, choose one option:")
+        lines.append("    A: Open VS Code via the UNC path instead of the drive letter.")
+        lines.append("    B: Rename ~/.claude/projects/<drive-slug>/ to the UNC-encoded slug.")
+        lines.append("       See README.md for step-by-step instructions.")
         lines.append("")
 
     if not schema_ok:

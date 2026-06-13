@@ -1,5 +1,5 @@
 {
-  "diagnosis_id": "3eb1bc1e",
+  "diagnosis_id": "33e80ab2",
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
@@ -33,6 +33,8 @@
     "cli_version": null,
     "desktop_running": false,
     "running_inside_desktop": false,
-    "install_type": null
+    "install_type": null,
+    "mapped_drive_unc_mismatch_count": 0,
+    "mapped_drive_affected_drives": []
   }
 }

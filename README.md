@@ -104,6 +104,32 @@ The write-bearing scripts (`repair_session_metadata.py`, `synth_session_metadata
 
 ---
 
+## Mapped network drives (Windows, VS Code extension)
+
+If your workspace is on a mapped Windows drive (`N:\`, `Z:\`, etc.), the VS Code extension's session history sidebar may show no past sessions even though the sessions exist on disk and `claude --resume` works fine in the integrated terminal.
+
+The CLI writes project slugs from the literal drive-letter path (`N:\path\to\project` → `n--path-to-project`). The VS Code extension resolves drive letters to UNC paths via Node's `fs.realpath()` (`N:\` → `\\server\share\`) and derives a different slug from that UNC form. The two encoding paths disagree, so the extension searches under a project directory that doesn't exist.
+
+`diagnose.py` detects this and prints a NOTE when affected project directories are found. The Desktop app and `claude --resume` / `--continue` are not affected.
+
+**To fix the VS Code extension sidebar, choose one option:**
+
+**Option A — open via UNC path.** Open VS Code using the UNC path (`\\server\share\path\to\project`) instead of the drive letter. This aligns the extension's encoding with the slug the CLI wrote. New sessions started this way will use the UNC-encoded slug automatically.
+
+**Option B — rename the project directory.** Keep opening via the drive letter, but rename the existing project directory to match what the extension expects.
+
+1. Find the UNC path your drive letter resolves to:
+   ```powershell
+   [System.IO.Path]::GetFullPath("N:\\")   # replace N with your drive letter
+   ```
+2. Encode the result as a project slug: replace `\\` with `--` and `\` with `-`. For example, `\\Qnap01\Qnap1\my\project` → `--Qnap01-Qnap1-my-project`.
+3. Rename `~\.claude\projects\<drive-letter-slug>\` to `~\.claude\projects\<unc-slug>\`.
+4. If any metadata files in `%APPDATA%\Claude\claude-code-sessions\` have a `cwd` field set to the drive-letter path, update them to the UNC path — otherwise the Desktop app may show sessions but the stored cwd will be stale.
+
+This is a known VS Code extension limitation (`anthropics/claude-code#31219`, closed as not planned). Community-confirmed on Windows 10 and Windows 11 across multiple drive types (NAS via SMB, UNC-mapped drives).
+
+---
+
 ## Prevention — stop it happening again
 
 The tools above repair problems after they occur. These run proactively, so you have a clean recovery path if something goes wrong next time.

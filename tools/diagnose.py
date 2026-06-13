@@ -185,6 +185,102 @@ def _detect_mapped_drive_slugs(projects_dir):
 
 
 # ---------------------------------------------------------------------------
+# VS Code session cache scan (live-mode only, not part of snapshot)
+# ---------------------------------------------------------------------------
+
+def _scan_vscode_dropped_sessions(projects_dir):
+    """Return (dropped_count, db_count) for sessions on disk missing from
+    VS Code's agentSessions.model.cache.
+
+    Skipped (returns 0, 0) if:
+      - sqlite3 is unavailable
+      - VS Code workspace storage directory does not exist
+    """
+    try:
+        import sqlite3 as _sqlite3
+        import re as _re
+    except ImportError:
+        return 0, 0
+
+    _uuid_re = _re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        _re.IGNORECASE,
+    )
+
+    # Locate workspace storage
+    sys_name = platform.system()
+    if sys_name == "Darwin":
+        ws_dir = os.path.expanduser(
+            "~/Library/Application Support/Code/User/workspaceStorage"
+        )
+    elif sys_name == "Linux":
+        ws_dir = os.path.expanduser("~/.config/Code/User/workspaceStorage")
+    else:
+        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+        ws_dir = os.path.join(appdata, "Code", "User", "workspaceStorage")
+
+    if not os.path.isdir(ws_dir):
+        return 0, 0
+
+    # Collect all cached session UUIDs across Claude-aware DBs
+    cached_uuids = set()
+    db_count = 0
+    for wsid in os.listdir(ws_dir):
+        db_path = os.path.join(ws_dir, wsid, "state.vscdb")
+        if not os.path.isfile(db_path):
+            continue
+        try:
+            conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            try:
+                cur = conn.execute(
+                    "SELECT value FROM ItemTable WHERE key='agentSessions.model.cache'"
+                )
+                row = cur.fetchone()
+            finally:
+                conn.close()
+        except Exception:
+            continue
+        if not row or not row[0]:
+            continue
+        try:
+            cache = json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(cache, list):
+            continue
+        has_cc = any(
+            isinstance(e, dict) and "claude-code:/" in e.get("resource", "")
+            for e in cache
+        )
+        if not has_cc:
+            continue
+        db_count += 1
+        for entry in cache:
+            res = entry.get("resource", "") if isinstance(entry, dict) else ""
+            if res.startswith("claude-code:/"):
+                sid = res[len("claude-code:/"):]
+                if _uuid_re.match(sid):
+                    cached_uuids.add(sid)
+
+    if db_count == 0:
+        return 0, 0
+
+    # Count JSONL files on disk not in any cache
+    dropped = 0
+    if os.path.isdir(projects_dir):
+        for slug in os.listdir(projects_dir):
+            slug_dir = os.path.join(projects_dir, slug)
+            if not os.path.isdir(slug_dir):
+                continue
+            for f in glob.glob(os.path.join(slug_dir, "*.jsonl")):
+                sid = os.path.splitext(os.path.basename(f))[0]
+                if _uuid_re.match(sid) and sid not in cached_uuids:
+                    dropped += 1
+
+    return dropped, db_count
+
+
+# ---------------------------------------------------------------------------
 # Snapshot builder
 # ---------------------------------------------------------------------------
 
@@ -609,7 +705,8 @@ def eval_match(predicate, snapshot):
 _SEP = "-" * 60
 
 
-def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None):
+def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None,
+                  vscode_dropped=0, vscode_db_count=0):
     lines = [
         "DIAGNOSE -- Claude Code Desktop Session Recovery Tools",
         _SEP,
@@ -677,6 +774,25 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None):
         lines.append("    A: Open VS Code via the UNC path instead of the drive letter.")
         lines.append("    B: Rename ~/.claude/projects/<drive-slug>/ to the UNC-encoded slug.")
         lines.append("       See README.md for step-by-step instructions.")
+        lines.append("")
+
+    if vscode_dropped > 0:
+        lines.append(
+            f"NOTE: {vscode_dropped} transcript file(s) on disk are not in the VS Code"
+            " extension's session cache."
+        )
+        lines.append(
+            "  Sessions may be missing from Local -> Session History in VS Code even"
+        )
+        lines.append("  though the transcripts are intact and resumable via the CLI.")
+        lines.append("  To recover them:")
+        lines.append(
+            "    python tools/sessions/recover_vscode_sessions.py"
+        )
+        lines.append(
+            "    python tools/sessions/recover_vscode_sessions.py --apply  "
+            "(VS Code must be closed)"
+        )
         lines.append("")
 
     if not schema_ok:
@@ -790,6 +906,13 @@ def main():
     schema_ok = snapshot["schema_version"] == "recognised"
     matches = [row for row in rows if eval_match(row.get("match", {}), snapshot)]
 
+    # VS Code session cache check — live mode only; skipped in fixture/json mode
+    # so golden outputs stay deterministic.
+    vscode_dropped = 0
+    vscode_db_count = 0
+    if not args.state and not args.json_output:
+        vscode_dropped, vscode_db_count = _scan_vscode_dropped_sessions(projects_dir)
+
     if args.json_output:
         output = {
             "diagnosis_id": diagnosis_id,
@@ -820,7 +943,10 @@ def main():
         }
         print(json.dumps(output, indent=2))
     else:
-        print(_format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root))
+        print(_format_human(
+            diagnosis_id, snapshot, matches, schema_ok, repo_root,
+            vscode_dropped=vscode_dropped, vscode_db_count=vscode_db_count,
+        ))
 
 
 if __name__ == "__main__":

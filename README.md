@@ -71,6 +71,7 @@ Run `python tools/diagnose.py` first — it identifies your specific problem and
 | One project, two sets of sessions | `python tools/diagnose.py` | [session-recovery.md#junction-realpath-slug-mismatch](docs/session-recovery.md#junction-realpath-slug-mismatch) |
 | Sessions missing from Desktop session list | `python tools/diagnose.py` | [session-recovery.md#orphan-jsonl-no-metadata](docs/session-recovery.md#orphan-jsonl-no-metadata) |
 | Group assignments wiped or missing after Desktop update | `python tools/groupings/list_groupings.py` | [architecture.md#session-grouping-layer](docs/architecture.md#session-grouping-layer) — read-only diagnostic; no automated fix |
+| Sessions missing from VS Code extension sidebar (exist on disk, resumable via CLI) | `python tools/sessions/recover_vscode_sessions.py` | [VS Code session list](#vs-code-extension-session-list) — caused by extension's 64 KB read buffer; repair injects missing entries into the workspace SQLite cache |
 
 ---
 
@@ -127,6 +128,25 @@ The CLI writes project slugs from the literal drive-letter path (`N:\path\to\pro
 4. If any metadata files in `%APPDATA%\Claude\claude-code-sessions\` have a `cwd` field set to the drive-letter path, update them to the UNC path — otherwise the Desktop app may show sessions but the stored cwd will be stale.
 
 This is a known VS Code extension limitation (`anthropics/claude-code#31219`, closed as not planned). Community-confirmed on Windows 10 and Windows 11 across multiple drive types (NAS via SMB, UNC-mapped drives).
+
+---
+
+## VS Code extension session list
+
+Sessions in VS Code's **Local → Session History** sidebar can disappear after a restart even when the underlying transcripts are intact and `claude --resume <session-id>` works fine. The extension only reads the first and last 64 KB of each transcript file when building the sidebar list — sessions whose title entry lands in the middle of a large file are silently excluded from the cache.
+
+`diagnose.py` detects this and prints a NOTE when transcript files on disk outnumber what the VS Code cache knows about. `recover_vscode_sessions.py` fixes it by reading full transcript files and injecting the missing entries back into the extension's workspace SQLite database (`state.vscdb`).
+
+```
+python tools/sessions/recover_vscode_sessions.py          # dry-run: shows what would be injected
+python tools/sessions/recover_vscode_sessions.py --apply  # writes changes (VS Code must be closed)
+```
+
+**Requirements:** VS Code must be fully closed before running with `--apply`. The script checks for a running VS Code process and exits with an error if one is found. After running, restart VS Code and the recovered sessions should appear in the sidebar.
+
+**Backups:** before writing, the script saves the original `agentSessions.model.cache` value to a JSON file alongside the script. To roll back: open the backup JSON and restore the `original_cache` value into the database.
+
+**Scope:** the script targets all Claude Code-aware workspace databases under the VS Code workspace storage directory — so sessions are recovered regardless of which workspace folder you open.
 
 ---
 

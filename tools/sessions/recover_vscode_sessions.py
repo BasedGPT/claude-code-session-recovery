@@ -1,0 +1,427 @@
+"""
+Recover VS Code extension session list entries that exist on disk but are
+missing from the extension's workspace SQLite cache.
+
+Background
+----------
+The Claude Code VS Code extension stores its session sidebar list in a
+per-workspace SQLite database:
+
+  Windows : %APPDATA%\\Code\\User\\workspaceStorage\\<WSID>\\state.vscdb
+  macOS   : ~/Library/Application Support/Code/User/workspaceStorage/<WSID>/state.vscdb
+
+The key `agentSessions.model.cache` holds a JSON array of session entries.
+The extension only reads the first and last 64 KB of each transcript file
+when building the list; sessions whose title entry lands in the middle of a
+large file are silently excluded. This script reads full transcript files to
+find titles and reinjects missing entries.
+
+The session transcript files themselves (`~/.claude/projects/`) are not
+touched. This script only modifies `state.vscdb`.
+
+Files read:
+  - %APPDATA%\\Code\\User\\workspaceStorage\\*\\state.vscdb
+  - ~/.claude/projects/<slug>/*.jsonl
+
+Files written (with --apply only):
+  - %APPDATA%\\Code\\User\\workspaceStorage\\*\\state.vscdb
+    (agentSessions.model.cache updated in-place)
+  - ./vscode-cache-backup-<WSID>-<timestamp>.json
+    (backup of original model.cache written alongside this script)
+
+Usage:
+    python tools/sessions/recover_vscode_sessions.py
+    python tools/sessions/recover_vscode_sessions.py --apply
+    python tools/sessions/recover_vscode_sessions.py --projects-dir ~/.claude/projects
+    python tools/sessions/recover_vscode_sessions.py --workspace-dir /path/to/workspaceStorage
+"""
+import argparse
+import glob
+import json
+import os
+import platform
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# Platform paths
+# ---------------------------------------------------------------------------
+
+def _default_workspace_dir():
+    sys_name = platform.system()
+    if sys_name == "Darwin":
+        return os.path.expanduser(
+            "~/Library/Application Support/Code/User/workspaceStorage"
+        )
+    if sys_name == "Linux":
+        return os.path.expanduser("~/.config/Code/User/workspaceStorage")
+    # Windows
+    appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+    return os.path.join(appdata, "Code", "User", "workspaceStorage")
+
+
+def _default_projects_dir():
+    return os.path.join(os.path.expanduser("~"), ".claude", "projects")
+
+
+# ---------------------------------------------------------------------------
+# VS Code process check
+# ---------------------------------------------------------------------------
+
+def _vscode_running():
+    """Return True if VS Code appears to be running."""
+    sys_name = platform.system()
+    if sys_name == "Windows":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq Code.exe"],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            return "code.exe" in result.stdout.lower()
+        except Exception:
+            return False
+    else:
+        # macOS / Linux: look for VS Code Electron helper process
+        for pattern in ("Code Helper", "Visual Studio Code"):
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-f", pattern],
+                    capture_output=True, timeout=5, check=False,
+                )
+                if result.returncode == 0:
+                    return True
+            except Exception:
+                pass
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Workspace DB discovery
+# ---------------------------------------------------------------------------
+
+def _find_claude_dbs(workspace_dir):
+    """Find state.vscdb files that contain agentSessions.model.cache entries.
+
+    Returns list of (db_path, wsid, cache_list) tuples.
+    """
+    results = []
+    if not os.path.isdir(workspace_dir):
+        return results
+    for wsid in sorted(os.listdir(workspace_dir)):
+        db_path = os.path.join(workspace_dir, wsid, "state.vscdb")
+        if not os.path.isfile(db_path):
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            try:
+                cur = conn.execute(
+                    "SELECT value FROM ItemTable WHERE key='agentSessions.model.cache'"
+                )
+                row = cur.fetchone()
+            finally:
+                conn.close()
+        except sqlite3.OperationalError:
+            continue
+        except Exception:
+            continue
+        if not row or not row[0]:
+            continue
+        try:
+            cache = json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(cache, list):
+            continue
+        # Only include DBs that have at least one Claude Code entry
+        has_cc = any(
+            isinstance(e, dict) and "claude-code:/" in e.get("resource", "")
+            for e in cache
+        )
+        if has_cc:
+            results.append((db_path, wsid, cache))
+    return results
+
+
+def _cached_uuids(dbs):
+    """Return the set of session UUIDs across all discovered DBs."""
+    uuids = set()
+    for _db_path, _wsid, cache in dbs:
+        for entry in cache:
+            resource = entry.get("resource", "") if isinstance(entry, dict) else ""
+            if resource.startswith("claude-code:/"):
+                sid = resource[len("claude-code:/"):]
+                if _UUID_RE.match(sid):
+                    uuids.add(sid)
+    return uuids
+
+
+# ---------------------------------------------------------------------------
+# JSONL scanning
+# ---------------------------------------------------------------------------
+
+def _build_disk_index(projects_dir):
+    """Return {session_uuid: absolute_jsonl_path} for every *.jsonl found."""
+    index = {}
+    if not os.path.isdir(projects_dir):
+        return index
+    for slug in sorted(os.listdir(projects_dir)):
+        slug_dir = os.path.join(projects_dir, slug)
+        if not os.path.isdir(slug_dir):
+            continue
+        for f in glob.glob(os.path.join(slug_dir, "*.jsonl")):
+            sid = os.path.splitext(os.path.basename(f))[0]
+            if _UUID_RE.match(sid):
+                index[sid] = f
+    return index
+
+
+def _read_session_meta(jsonl_path):
+    """Read a JSONL file to extract title (str or None) and created_ms (int or None).
+
+    Reads the full file so the title is found even on large sessions where
+    the extension's 64 KB head/tail buffer would miss it.
+    """
+    title = None
+    created_ms = None
+    try:
+        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+
+                entry_type = obj.get("type", "")
+                if entry_type == "custom-title" and obj.get("customTitle") and not title:
+                    title = str(obj["customTitle"])
+                elif entry_type == "ai-title" and obj.get("aiTitle") and title is None:
+                    title = str(obj["aiTitle"])
+
+                if created_ms is None:
+                    ts = obj.get("timestamp")
+                    if isinstance(ts, (int, float)) and ts > 0:
+                        created_ms = int(ts)
+                    elif isinstance(ts, str):
+                        try:
+                            import datetime
+                            ts_clean = ts.replace("Z", "+00:00")
+                            dt = datetime.datetime.fromisoformat(ts_clean)
+                            created_ms = int(dt.timestamp() * 1000)
+                        except (ValueError, OverflowError):
+                            pass
+    except OSError:
+        pass
+    return title, created_ms
+
+
+def _make_cache_entry(sid, title, created_ms, now_ms):
+    label = title or sid
+    return {
+        "providerType": "claude-code",
+        "providerLabel": "Claude",
+        "resource": f"claude-code:/{sid}",
+        "icon": "claude",
+        "label": label,
+        "tooltip": f"Claude Code session: {label}",
+        "status": 1,
+        "timing": {
+            "created": created_ms or now_ms,
+            "lastRequestEnded": now_ms,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Backup helpers
+# ---------------------------------------------------------------------------
+
+def _backup_path(db_path, wsid, timestamp_s):
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    fname = f"vscode-cache-backup-{wsid[:8]}-{timestamp_s}.json"
+    return os.path.join(script_dir, fname)
+
+
+def _write_backup(backup_path, wsid, db_path, cache):
+    payload = {"wsid": wsid, "db_path": db_path, "original_cache": cache}
+    with open(backup_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Apply
+# ---------------------------------------------------------------------------
+
+def _apply_recovery(db_path, new_cache):
+    """Write the new model.cache back to state.vscdb."""
+    new_value = json.dumps(new_cache)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE ItemTable SET value=? WHERE key='agentSessions.model.cache'",
+            (new_value,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    ap = argparse.ArgumentParser(
+        description=(
+            "Recover VS Code extension session list entries that exist on disk "
+            "but are missing from the extension's workspace SQLite cache."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "VS Code must be fully closed before running with --apply.\n"
+            "Run without --apply first to see what would change."
+        ),
+    )
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the recovered entries into state.vscdb. Default is dry-run.",
+    )
+    ap.add_argument(
+        "--projects-dir",
+        default=None,
+        metavar="PATH",
+        help="Override path to ~/.claude/projects/",
+    )
+    ap.add_argument(
+        "--workspace-dir",
+        default=None,
+        metavar="PATH",
+        help="Override path to VS Code workspaceStorage directory.",
+    )
+    args = ap.parse_args()
+
+    workspace_dir = args.workspace_dir or _default_workspace_dir()
+    projects_dir = args.projects_dir or _default_projects_dir()
+
+    print("VS Code Session Recovery")
+    print("-" * 60)
+    print(f"Workspace storage : {workspace_dir}")
+    print(f"Projects dir      : {projects_dir}")
+    print()
+
+    # --- Discover Claude-aware workspace DBs ---
+    print("Scanning workspace databases...")
+    dbs = _find_claude_dbs(workspace_dir)
+    if not dbs:
+        print(
+            "No VS Code workspace databases with Claude Code session entries found.\n"
+            "If you have used Claude Code in VS Code, ensure the workspace storage\n"
+            f"directory exists at: {workspace_dir}"
+        )
+        return
+
+    print(f"Found {len(dbs)} Claude Code workspace database(s):")
+    for db_path, wsid, cache in dbs:
+        cc_count = sum(
+            1 for e in cache
+            if isinstance(e, dict) and "claude-code:/" in e.get("resource", "")
+        )
+        print(f"  [{wsid[:8]}...] {cc_count} session(s) in cache — {db_path}")
+    print()
+
+    # --- Build the set of UUIDs already in any cache ---
+    all_cached = _cached_uuids(dbs)
+
+    # --- Scan disk for all JSONL session files ---
+    print("Scanning transcript files on disk...")
+    disk_index = _build_disk_index(projects_dir)
+    print(f"Found {len(disk_index)} transcript file(s) on disk.")
+    print()
+
+    # --- Find missing entries ---
+    missing_uuids = sorted(set(disk_index.keys()) - all_cached)
+    if not missing_uuids:
+        print("All disk sessions are already present in the VS Code session cache.")
+        print("Nothing to recover.")
+        return
+
+    print(f"{len(missing_uuids)} session(s) on disk are missing from the VS Code cache:")
+    now_ms = int(time.time() * 1000)
+    new_entries = []
+    for sid in missing_uuids:
+        jsonl_path = disk_index[sid]
+        title, created_ms = _read_session_meta(jsonl_path)
+        entry = _make_cache_entry(sid, title, created_ms, now_ms)
+        new_entries.append(entry)
+        ts_display = ""
+        if created_ms:
+            import datetime
+            ts_display = datetime.datetime.fromtimestamp(created_ms / 1000).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+        label = title or "(no title found)"
+        print(f"  {sid[:12]}...  {ts_display:>16}  {label[:55]}")
+    print()
+
+    if not args.apply:
+        print(
+            f"DRY RUN — {len(new_entries)} entry/entries would be injected into "
+            f"{len(dbs)} database(s)."
+        )
+        print("Run with --apply to write changes.")
+        print()
+        print(
+            "NOTE: Close VS Code fully before running with --apply.\n"
+            "      VS Code overwrites state.vscdb on startup and will discard\n"
+            "      changes written while it is open."
+        )
+        return
+
+    # --- Pre-apply checks ---
+    if _vscode_running():
+        print(
+            "ERROR: VS Code appears to be running.\n"
+            "Close VS Code fully before running with --apply — it overwrites\n"
+            "state.vscdb on startup and will discard any changes written while open."
+        )
+        sys.exit(1)
+
+    # --- Apply to each DB ---
+    timestamp_s = str(int(time.time()))
+    for db_path, wsid, cache in dbs:
+        backup_file = _backup_path(db_path, wsid, timestamp_s)
+        _write_backup(backup_file, wsid, db_path, cache)
+        print(f"Backup written: {backup_file}")
+
+        combined = cache + new_entries
+        _apply_recovery(db_path, combined)
+        print(
+            f"Injected {len(new_entries)} entry/entries into [{wsid[:8]}...] — "
+            f"{len(combined)} total entries in cache."
+        )
+
+    print()
+    print("Done. Restart VS Code and check Local -> Session History.")
+    print()
+    print("Rollback: replace agentSessions.model.cache in state.vscdb with the")
+    print("original_cache value from the backup JSON file(s) above.")
+
+
+if __name__ == "__main__":
+    main()

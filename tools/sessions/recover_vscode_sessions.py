@@ -200,13 +200,20 @@ def _build_disk_index(projects_dir):
 
 
 def _read_session_meta(jsonl_path):
-    """Read a JSONL file to extract title (str or None) and created_ms (int or None).
+    """Read a JSONL file to extract title, created_ms, and last_message_ms.
 
     Reads the full file so the title is found even on large sessions where
     the extension's 64 KB head/tail buffer would miss it.
+
+    last_message_ms is the timestamp of the last JSONL entry that carries one.
+    Trailer records appended by the extension (ai-title, last-prompt) carry no
+    timestamp, so they don't advance this value -- it reflects the last real
+    conversation event regardless of how many title-rewrites have since bumped
+    the file's mtime.
     """
     title = None
     created_ms = None
+    last_message_ms = None
     try:
         with open(jsonl_path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -226,30 +233,43 @@ def _read_session_meta(jsonl_path):
                 elif entry_type == "ai-title" and obj.get("aiTitle") and title is None:
                     title = str(obj["aiTitle"])
 
-                if created_ms is None:
-                    ts = obj.get("timestamp")
-                    if isinstance(ts, (int, float)) and ts > 0:
-                        created_ms = int(ts)
-                    elif isinstance(ts, str):
-                        try:
-                            import datetime
-                            ts_clean = ts.replace("Z", "+00:00")
-                            dt = datetime.datetime.fromisoformat(ts_clean)
-                            created_ms = int(dt.timestamp() * 1000)
-                        except (ValueError, OverflowError):
-                            pass
+                ts = obj.get("timestamp")
+                ts_ms = None
+                if isinstance(ts, (int, float)) and ts > 0:
+                    ts_ms = int(ts)
+                elif isinstance(ts, str):
+                    try:
+                        import datetime
+                        ts_clean = ts.replace("Z", "+00:00")
+                        dt = datetime.datetime.fromisoformat(ts_clean)
+                        ts_ms = int(dt.timestamp() * 1000)
+                    except (ValueError, OverflowError):
+                        pass
+
+                if ts_ms is not None:
+                    if created_ms is None:
+                        created_ms = ts_ms
+                    last_message_ms = ts_ms  # keep advancing -- last wins
+
     except OSError:
         pass
-    return title, created_ms
+    return title, created_ms, last_message_ms
 
 
-def _make_cache_entry(sid, title, created_ms, now_ms):
+def _make_cache_entry(sid, title, created_ms, last_message_ms, now_ms):
     label = title or sid
     ts_max = now_ms + 24 * 60 * 60 * 1000  # accept up to 24 h in the future
     if created_ms is not None and _TS_MIN_MS <= created_ms <= ts_max:
         timing_created = created_ms
     else:
         timing_created = now_ms
+    # Use the last real conversation timestamp for sort order, not now_ms.
+    # Trailer records (ai-title, last-prompt) carry no timestamp so they don't
+    # advance last_message_ms -- recovered sessions sort by actual recency.
+    if last_message_ms is not None and _TS_MIN_MS <= last_message_ms <= ts_max:
+        timing_last = last_message_ms
+    else:
+        timing_last = timing_created
     return {
         "providerType": "claude-code",
         "providerLabel": "Claude",
@@ -260,7 +280,7 @@ def _make_cache_entry(sid, title, created_ms, now_ms):
         "status": 1,
         "timing": {
             "created": timing_created,
-            "lastRequestEnded": now_ms,
+            "lastRequestEnded": timing_last,
         },
     }
 
@@ -442,8 +462,8 @@ def main():
     new_entries = []
     for sid in missing_uuids:
         jsonl_path = disk_index[sid]
-        title, created_ms = _read_session_meta(jsonl_path)
-        entry = _make_cache_entry(sid, title, created_ms, now_ms)
+        title, created_ms, last_message_ms = _read_session_meta(jsonl_path)
+        entry = _make_cache_entry(sid, title, created_ms, last_message_ms, now_ms)
         new_entries.append(entry)
         ts_display = ""
         if created_ms:

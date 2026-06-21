@@ -29,6 +29,21 @@ Files written (with --apply only):
   - ./repair-backup/vscode-cache-backup-<WSID>-<timestamp>.json
     (backup of original model.cache; directory created if absent)
 
+Prerequisites (mapped drives / junction paths)
+-----------------------------------------------
+If your project is on a mapped drive (Z:\\, O:\\, etc.) or opened via a
+Windows directory junction, the VS Code extension derives a different project
+slug than the CLI -- its listSessions() calls fs.realpathSync, which
+dereferences the drive letter to its UNC path before encoding the slug.
+This means any cache you inject here will be overwritten back to [] the
+next time a new session is created, because listSessions() looks in the
+wrong (now-empty) slug folder and writes [] back to the cache.
+
+Fix the path-mismatch root cause first (e.g. the SessionStart junction hook
+documented in anthropics/claude-code #14088) so listSessions() resolves to
+the same slug the CLI used. Once the lookup is consistent, this script's
+cache rebuild will survive across new-session creation.
+
 Usage:
     python tools/sessions/recover_vscode_sessions.py
     python tools/sessions/recover_vscode_sessions.py --apply
@@ -528,6 +543,16 @@ def main():
     print()
     print("Rollback: replace agentSessions.model.cache in state.vscdb with the")
     print("original_cache value from the backup JSON file(s) above.")
+    print()
+    print(
+        "NOTE: If sessions disappear again after creating a new chat, the"
+        " VS Code extension is overwriting the cache via listSessions(),"
+        " which dereferences your mapped drive to its UNC path and finds"
+        " an empty slug folder. Fix the path-mismatch root cause (e.g. the"
+        " SessionStart junction hook in anthropics/claude-code #14088) so"
+        " listSessions() resolves to the correct slug before relying on"
+        " this rebuild."
+    )
 
 
 if __name__ == "__main__":

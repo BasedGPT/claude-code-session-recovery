@@ -2,17 +2,29 @@
 
 ## Threat model
 
-Scripts in this repo read from four locations on your system:
+Scripts in this repo read from these locations on your system:
 
+**Windows (standard install)**
 - `%APPDATA%\Claude\claude-code-sessions\<account-uuid>\<org-uuid>\local_*.json` — Desktop session metadata files
 - `%USERPROFILE%\.claude\projects\<slug>\*.jsonl` — Claude Code conversation transcripts
 - `%LOCALAPPDATA%\AnthropicClaude\` — directory listing only, for version detection
 - `%APPDATA%\Claude\Local Storage\leveldb\*.ldb` and `*.log` — Desktop grouping state (read-only; `list_groupings.py` only)
 
+**Windows (MSIX / Microsoft Store install)** — `diagnose.py` falls back to:
+- `%LOCALAPPDATA%\Packages\Claude_<hash>\LocalCache\Roaming\Claude\claude-code-sessions\…`
+
+**macOS**
+- `~/Library/Application Support/Claude/claude-code-sessions/<account-uuid>/<org-uuid>/local_*.json`
+- `~/.claude/projects/<slug>/*.jsonl`
+
+**Linux**
+- `~/.config/Claude/claude-code-sessions/<account-uuid>/<org-uuid>/local_*.json`
+- `~/.claude/projects/<slug>/*.jsonl`
+
 Mutating scripts write to:
 
 - The specific metadata files they repair, in-place, after creating a backup
-- `%USERPROFILE%\.claude\projects\<slug>\<uuid>.jsonl` — `restore_from_vss.py` only; writes recovered transcripts as new files, never overwrites an existing JSONL
+- `~/.claude/projects/<slug>/<uuid>.jsonl` — `restore_from_vss.py` only (Windows); writes recovered transcripts as new files, never overwrites an existing JSONL
 - `.\repair-backup\` — a directory created next to where the script runs; originals go here before any mutation, and `restore_from_vss.py` writes a restore log here
 
 No other files are touched. Scripts never touch the registry and never access credentials or the clipboard.

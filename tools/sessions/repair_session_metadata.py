@@ -62,8 +62,23 @@ def _default_paths():
             os.path.expanduser("~/.config/Claude"),
             os.path.expanduser("~/.claude/projects"),
         )
+    _appdata_claude = os.path.join(
+        os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
+    )
+    if not os.path.isdir(_appdata_claude):
+        _local = os.environ.get("LOCALAPPDATA", "")
+        _pkgs = os.path.join(_local, "Packages")
+        if os.path.isdir(_pkgs):
+            for _pkg in sorted(os.listdir(_pkgs)):
+                if _pkg.startswith("Claude_"):
+                    _cand = os.path.join(
+                        _pkgs, _pkg, "LocalCache", "Roaming", "Claude"
+                    )
+                    if os.path.isdir(_cand):
+                        _appdata_claude = _cand
+                        break
     return (
-        os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"),
+        _appdata_claude,
         os.path.join(os.path.expanduser("~"), ".claude", "projects"),
     )
 
@@ -408,6 +423,7 @@ def main():
             shutil.copy2(path, os.path.join(BACKUP_DIR, fname))
             repaired_meta = dict(meta)
             repaired_meta["cliSessionId"] = cli_match
+            repaired_meta.pop("transcriptUnavailable", None)
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(repaired_meta, fh, indent=2)
 

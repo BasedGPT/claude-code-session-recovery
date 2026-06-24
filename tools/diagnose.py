@@ -890,6 +890,18 @@ def main():
             appdata_claude_dir = os.path.join(
                 os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
             )
+            if not os.path.isdir(appdata_claude_dir):
+                _local = os.environ.get("LOCALAPPDATA", "")
+                _pkgs = os.path.join(_local, "Packages")
+                if os.path.isdir(_pkgs):
+                    for _pkg in sorted(os.listdir(_pkgs)):
+                        if _pkg.startswith("Claude_"):
+                            _cand = os.path.join(
+                                _pkgs, _pkg, "LocalCache", "Roaming", "Claude"
+                            )
+                            if os.path.isdir(_cand):
+                                appdata_claude_dir = _cand
+                                break
             projects_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 
     snapshot = build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=args.state is not None)

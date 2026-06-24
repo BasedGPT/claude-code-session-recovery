@@ -39,6 +39,7 @@ import argparse
 import glob
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -57,10 +58,18 @@ except ImportError as exc:
     sys.exit(1)
 
 # --- Configuration ---
-# Used when --state is not supplied (live mode).
-APPDATA_CLAUDE_DIR = os.path.join(
-    os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
-)
+
+def _default_appdata_claude_dir():
+    """Return the platform-appropriate Claude app-data directory."""
+    _sys = platform.system()
+    if _sys == "Darwin":
+        return os.path.expanduser("~/Library/Application Support/Claude")
+    if _sys == "Linux":
+        return os.path.expanduser("~/.config/Claude")
+    return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude")
+
+
+APPDATA_CLAUDE_DIR = _default_appdata_claude_dir()
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKUP_DIR = os.path.join(TOOL_DIR, "cwd-rewrite-backup")

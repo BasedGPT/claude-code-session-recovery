@@ -416,12 +416,13 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         desktop_running = False
         running_inside_desktop = False
         install_type = None
+        msix_real_path = None
     else:
         desktop_version = _detect_desktop_version()
         cli_version = _detect_cli_version()
         desktop_running = _detect_desktop_running()
         running_inside_desktop = _detect_running_inside_desktop() if desktop_running else False
-        install_type = _detect_install_type()
+        install_type, msix_real_path = _detect_install_type()
 
     return {
         "total_metadata_count": total,
@@ -441,6 +442,7 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         "desktop_running": desktop_running,
         "running_inside_desktop": running_inside_desktop,
         "install_type": install_type,
+        "msix_real_path": msix_real_path,
         "mapped_drive_unc_mismatch_count": mapped_drive_count,
         "mapped_drive_affected_drives": mapped_drive_letters,
     }
@@ -554,14 +556,14 @@ def _detect_install_type():
     synth_session_metadata.py will not reliably surface sessions on MSIX.
     diagnose.py (read-only) works on both install types.
 
-    Returns: 'msix', 'exe', 'not_windows', or 'unknown'
+    Returns: ('msix', real_path) | ('exe', None) | ('not_windows', None) | ('unknown', None)
     """
     if platform.system() != "Windows":
-        return "not_windows"
+        return "not_windows", None
     appdata = os.environ.get("APPDATA", "")
     claude_appdata = os.path.join(appdata, "Claude")
     if not os.path.exists(claude_appdata):
-        return "unknown"
+        return "unknown", None
     try:
         real = os.path.realpath(claude_appdata)
         if os.path.normcase(real) != os.path.normcase(claude_appdata):
@@ -569,11 +571,11 @@ def _detect_install_type():
             # MSIX package paths always contain 'packages' and 'claude_'.
             real_lower = real.lower()
             if "packages" in real_lower and "claude_" in real_lower:
-                return "msix"
-            return "unknown"  # junction to somewhere unexpected
+                return "msix", real
+            return "unknown", None  # junction to somewhere unexpected
     except OSError:
         pass
-    return "exe"
+    return "exe", None
 
 
 def _detect_running_inside_desktop():
@@ -753,6 +755,9 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None,
 
     if snapshot.get("install_type") == "msix":
         lines.append("NOTE: Microsoft Store (MSIX) install detected.")
+        msix_path = snapshot.get("msix_real_path")
+        if msix_path:
+            lines.append(f"  Data path: {msix_path}")
         lines.append("  diagnose.py is read-only and works correctly on MSIX.")
         lines.append("  The write-bearing repair scripts (repair_session_metadata.py,")
         lines.append("  synth_session_metadata.py) are unlikely to surface sessions on")
@@ -937,6 +942,7 @@ def main():
             },
             "schema_probe": snapshot["schema_version"],
             "install_type": snapshot.get("install_type"),
+            "msix_real_path": snapshot.get("msix_real_path"),
             "desktop_running": snapshot["desktop_running"],
             "matched_problems": [
                 {

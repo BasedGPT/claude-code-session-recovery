@@ -7,6 +7,7 @@
   },
   "schema_probe": "recognised",
   "install_type": null,
+  "msix_real_path": null,
   "desktop_running": false,
   "matched_problems": [
     {
@@ -53,6 +54,7 @@
     "desktop_running": false,
     "running_inside_desktop": false,
     "install_type": null,
+    "msix_real_path": null,
     "mapped_drive_unc_mismatch_count": 0,
     "mapped_drive_affected_drives": []
   }

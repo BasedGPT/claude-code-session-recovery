@@ -95,6 +95,20 @@ BACKUP_DIR = os.path.join(TOOL_DIR, "repair-backup")
 # Refusal exits 3 with the message.
 # ---------------------------------------------------------------------------
 
+def _msix_do_not_run_message(s):
+    real = s.get("msix_real_path")
+    path_note = f" Your data is at: {real}" if real else ""
+    return (
+        "Microsoft Store (MSIX) install detected."
+        " repair_session_metadata.py is unlikely to surface sessions on MSIX:"
+        " Desktop maintains an internal session index that takes precedence over"
+        " externally-written files, regardless of write access to the package path."
+        f"{path_note}"
+        " Use 'claude --resume' in the project directory to re-enter a session."
+        " Run diagnose.py to see the full state report."
+    )
+
+
 KNOWN_DO_NOT_RUN = [
     (
         lambda s: s["metadata_missing_cli_count"] == 0,
@@ -106,6 +120,10 @@ KNOWN_DO_NOT_RUN = [
             "State schema not recognised. Run diagnose.py and report "
             "the unsupported state to the maintainer."
         ),
+    ),
+    (
+        lambda s: s.get("install_type") == "msix",
+        _msix_do_not_run_message,
     ),
 ]
 
@@ -358,7 +376,8 @@ def main():
     for predicate, message in KNOWN_DO_NOT_RUN:
         try:
             if predicate(snapshot):
-                print("REFUSED: " + message)
+                msg = message(snapshot) if callable(message) else message
+                print("REFUSED: " + msg)
                 sys.exit(3)
         except Exception:
             pass

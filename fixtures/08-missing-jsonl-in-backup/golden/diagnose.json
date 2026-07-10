@@ -37,6 +37,7 @@
     "metadata_missing_cli_count": 0,
     "metadata_dangling_cli_count": 3,
     "metadata_duplicate_cli_count": 0,
+    "metadata_null_timestamp_count": 0,
     "cwd_junction_mismatch_count": 0,
     "jsonl_orphan_count": 0,
     "cwd_slug_mismatch_count": 0,

@@ -1,0 +1,14 @@
+DIAGNOSE -- Claude Code Desktop Session Recovery Tools
+------------------------------------------------------------
+Diagnosis ID : 33e80ab2
+Metadata     : 4 files  (4 with cliSessionId,  0 missing)
+JSONL files  : 4
+Null stamps  : 1 metadata file(s) have null createdAt/updatedAt (can blank the entire session list)
+
+PROBLEM FOUND: The entire session list is empty after every Desktop restart, even though transcripts are intact on disk and the app log reports sessions being loaded
+  Details: docs/session-recovery.md#null-timestamp-metadata
+  Status : No mutation available yet. Quarantine (move) the flagged files rather than deleting them -- they can be repaired later by filling real timestamps from the transcript. Diagnose is read-only and safe to run anytime.
+
+  No automatic repair for this state. See:
+    docs/session-recovery.md#null-timestamp-metadata
+

@@ -203,3 +203,28 @@ PROBLEM FOUND: Sessions are absent from the session list even though their trans
 **Caution:** Synthesising metadata for all orphan transcripts will restore sessions you may have deliberately deleted (Desktop's "Delete" UI leaves transcripts on disk). Review the dry-run output and confirm before applying.
 
 **Recovery time:** 5–15 minutes.
+
+<a id="null-timestamp-metadata"></a>
+
+## Entire session list empty after restart
+
+**What you see.** Every time you restart Claude Desktop, the session list is completely empty — not one session, from any project. The transcripts are all on disk, the app's own log (`main.log`) says it loaded them (`Loaded N persisted sessions from ...claude-code-sessions...`), and clearing Desktop's caches or web storage changes nothing. It looks like total data loss. It isn't.
+
+**Why it happens (plain).** One of the small per-session files that Desktop uses to build the list is missing its dates. When Desktop tries to sort the list by date, that one dateless entry breaks the whole operation, and the list silently comes up empty. Nothing is lost — the list just refuses to render while that one bad file is present.
+
+**Why it happens (technical).** A metadata file in `claude-code-sessions/<account>/<org>/` has `"createdAt": null` (and typically `"updatedAt"`/`"lastActivityAt"` null too). The main process loads all metadata without complaint, but the renderer's sort/format step throws on the null and the entire list component renders empty. No error is logged in `main.log` or the renderer log, which is what makes this so hard to find — every subsystem reports healthy. These entries don't come from Desktop itself; they come from hand-rolled recovery/import attempts that synthesise metadata files without filling in the timestamp fields (`synth_session_metadata.py` in this repo fills them from the transcript, so metadata it produces is not affected).
+
+**How this was confirmed.** macOS case, Desktop 1.20186.0, 2026-07-10 (reported in [anthropics/claude-code#59736](https://github.com/anthropics/claude-code/issues/59736)): 34 metadata files loaded on every restart, sidebar always empty, full web-storage reset had no effect. Exactly one metadata file had null timestamps (plus one duplicate-cli file). Moving those two files out of the directory and restarting immediately restored all remaining sessions to the list.
+
+**What `diagnose.py` reports:**
+
+```
+Null stamps  : 1 metadata file(s) have null createdAt/updatedAt (can blank the entire session list)
+
+PROBLEM FOUND: The entire session list is empty after every Desktop restart, even though transcripts are intact on disk and the app log reports sessions being loaded
+  Details: docs/session-recovery.md#null-timestamp-metadata
+```
+
+**Repair (manual).** Quit Claude Desktop fully and verify no processes remain. Move the flagged `local_*.json` files out of `claude-code-sessions/<account>/<org>/` into a backup folder — quarantine, don't delete. Restart Desktop; the list should populate. If you want the quarantined session back in the list afterwards, fill its `createdAt`/`updatedAt` from the first and last `timestamp` records of its transcript JSONL and move the file back.
+
+**Recovery time:** 5 minutes.

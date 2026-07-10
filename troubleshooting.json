@@ -119,5 +119,20 @@
         {"snapshot.metadata_missing_cli_count": {"==": 0}}
       ]
     }
+  },
+  {
+    "id": "null-timestamp-metadata",
+    "domain": "session",
+    "problem": "The entire session list is empty after every Desktop restart, even though transcripts are intact on disk and the app log reports sessions being loaded",
+    "what_to_do": "Run tools/diagnose.py first. It will identify the metadata files with null timestamp fields. Quit Desktop fully, move the flagged files out of the metadata directory into a backup folder (quarantine, do not delete), then restart Desktop.",
+    "details": "docs/session-recovery.md#null-timestamp-metadata",
+    "safety": "No mutation available yet. Quarantine (move) the flagged files rather than deleting them -- they can be repaired later by filling real timestamps from the transcript. Diagnose is read-only and safe to run anytime.",
+    "fixture": "16-null-timestamp-metadata",
+    "mutator": null,
+    "match": {
+      "any": [
+        {"snapshot.metadata_null_timestamp_count": {">=": 1}}
+      ]
+    }
   }
 ]

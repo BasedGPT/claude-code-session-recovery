@@ -1,5 +1,5 @@
 {
-  "diagnosis_id": "7ae14714",
+  "diagnosis_id": "0a3b7100",
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
@@ -14,7 +14,7 @@
       "id": "junction-realpath-slug-mismatch",
       "domain": "session",
       "mutator": "tools/sessions/repoint_session_to_jsonl.py",
-      "next_command": "python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id 7ae14714",
+      "next_command": "python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id 0a3b7100",
       "safety_preconditions": [
         "Quit Claude Desktop fully before any mutation. Do not remove the junction while any session using it is active."
       ]
@@ -28,6 +28,7 @@
     "metadata_missing_cli_count": 0,
     "metadata_dangling_cli_count": 0,
     "metadata_duplicate_cli_count": 0,
+    "metadata_null_timestamp_count": 0,
     "cwd_junction_mismatch_count": 0,
     "jsonl_orphan_count": 0,
     "cwd_slug_mismatch_count": 1,

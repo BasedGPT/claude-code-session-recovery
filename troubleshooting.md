@@ -106,4 +106,18 @@ Run `python tools/diagnose.py` first — it reads this table, probes your state,
 
 ---
 
+### null-timestamp-metadata
+
+**Symptom:** The entire session list is empty after every Desktop restart, even though transcripts are intact on disk and the app log reports sessions being loaded.
+
+**Root cause:** A session metadata file has `null` in its timestamp fields (`createdAt` / `updatedAt` / `lastActivityAt`). A single such entry can break the session list's sort/render step and blank the whole list, with no error surfaced anywhere — the main process still logs "Loaded N persisted sessions". Typically produced by a hand-rolled recovery or import attempt that synthesised metadata without filling in timestamps.
+
+**Fix:** `python tools/diagnose.py` will identify the affected metadata files. Quit Claude Desktop fully, move the flagged files out of the metadata directory into a backup folder (quarantine, don't delete), and restart Desktop.
+
+**Safety:** No mutation available yet. Quarantine rather than delete — the file can be repaired later by filling real timestamps from the transcript. `diagnose.py` is read-only and safe to run anytime.
+
+**Details:** [docs/session-recovery.md#null-timestamp-metadata](docs/session-recovery.md#null-timestamp-metadata)
+
+---
+
 *More rows are added as new failure modes are confirmed and fixture-tested. See [troubleshooting.json](troubleshooting.json) for the machine-readable version.*

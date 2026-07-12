@@ -332,6 +332,22 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
     cli_counts = collections.Counter(cli_values)
     duplicate_cli_count = sum(1 for c in cli_counts.values() if c > 1)
 
+    # Count metadata files whose sort-critical timestamp fields are present
+    # but explicitly null. A single such entry can blank the ENTIRE Desktop
+    # session list: the list's sort/format step chokes on the null while the
+    # main process still logs "Loaded N persisted sessions", so nothing points
+    # at the bad file. Seen from hand-rolled recovery attempts that synthesise
+    # metadata without filling timestamps (anthropics/claude-code#59736).
+    # Archived entries are excluded for the same reason as missing_cli above.
+    null_timestamp_count = sum(
+        1 for _, d in meta_files
+        if not d.get("isArchived")
+        and any(
+            k in d and d[k] is None
+            for k in ("createdAt", "updatedAt", "lastActivityAt")
+        )
+    )
+
     cwd_prefix_types = {"junction": 0, "canonical": 0, "bare_root": 0, "other": 0}
     junction_mismatch_count = 0
 
@@ -430,6 +446,7 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         "metadata_missing_cli_count": missing_cli,
         "metadata_dangling_cli_count": dangling_cli,
         "metadata_duplicate_cli_count": duplicate_cli_count,
+        "metadata_null_timestamp_count": null_timestamp_count,
         "cwd_junction_mismatch_count": junction_mismatch_count,
         "jsonl_orphan_count": jsonl_orphan_count,
         "cwd_slug_mismatch_count": cwd_slug_mismatch_count,
@@ -629,7 +646,9 @@ def make_diagnosis_id(snapshot):
 
     Version fields (desktop_version, cli_version) and process state
     (desktop_running) are excluded -- they change independently of the
-    broken-state we're diagnosing.
+    broken-state we're diagnosing. Every structural detection signal is
+    included, so a state that differs only by a null-timestamp metadata file
+    gets a distinct ID from an otherwise-healthy one.
     """
     structural_keys = (
         "total_metadata_count",
@@ -637,6 +656,7 @@ def make_diagnosis_id(snapshot):
         "metadata_missing_cli_count",
         "metadata_dangling_cli_count",
         "metadata_duplicate_cli_count",
+        "metadata_null_timestamp_count",
         "cwd_junction_mismatch_count",
         "cwd_slug_mismatch_count",
         "truncated_jsonl_count",
@@ -730,6 +750,11 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None,
         lines.append(
             f"Truncated    : {snapshot['truncated_jsonl_count']} session(s) have fewer"
             " messages than completedTurns records (history appears cut off)"
+        )
+    if snapshot.get("metadata_null_timestamp_count", 0) > 0:
+        lines.append(
+            f"Null stamps  : {snapshot['metadata_null_timestamp_count']} metadata file(s)"
+            " have null createdAt/updatedAt (can blank the entire session list)"
         )
     lines.append("")
 

@@ -1,5 +1,5 @@
 {
-  "diagnosis_id": "efe57645",
+  "diagnosis_id": "708f98b8",
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
@@ -14,7 +14,7 @@
       "id": "duplicate-synth-metadata",
       "domain": "session",
       "mutator": "tools/sessions/cleanup_synth_duplicates.py",
-      "next_command": "python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id efe57645",
+      "next_command": "python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id 708f98b8",
       "safety_preconditions": [
         "Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime."
       ]
@@ -28,6 +28,7 @@
     "metadata_missing_cli_count": 0,
     "metadata_dangling_cli_count": 0,
     "metadata_duplicate_cli_count": 1,
+    "metadata_null_timestamp_count": 0,
     "cwd_junction_mismatch_count": 0,
     "jsonl_orphan_count": 0,
     "cwd_slug_mismatch_count": 0,

@@ -1,6 +1,6 @@
 DIAGNOSE -- Claude Code Desktop Session Recovery Tools
 ------------------------------------------------------------
-Diagnosis ID : 7ae14714
+Diagnosis ID : 0a3b7100
 Metadata     : 5 files  (5 with cliSessionId,  0 missing)
 JSONL files  : 5
 
@@ -9,6 +9,6 @@ PROBLEM FOUND: One project shows two sets of sessions in the session list
   Safety : Quit Claude Desktop fully before any mutation. Do not remove the junction while any session using it is active.
 
   To repair -- dry-run first, review output, then add --apply:
-    python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id 7ae14714
-    python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id 7ae14714 --apply
+    python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id 0a3b7100
+    python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id 0a3b7100 --apply
 

@@ -646,12 +646,9 @@ def make_diagnosis_id(snapshot):
 
     Version fields (desktop_version, cli_version) and process state
     (desktop_running) are excluded -- they change independently of the
-    broken-state we're diagnosing.
-
-    metadata_null_timestamp_count is deliberately NOT in structural_keys yet:
-    folding it in changes every published fixture diagnosis ID, and the
-    mutator goldens that embed those IDs can only be regenerated on Windows.
-    Fold it in at the next Windows golden regeneration.
+    broken-state we're diagnosing. Every structural detection signal is
+    included, so a state that differs only by a null-timestamp metadata file
+    gets a distinct ID from an otherwise-healthy one.
     """
     structural_keys = (
         "total_metadata_count",
@@ -659,6 +656,7 @@ def make_diagnosis_id(snapshot):
         "metadata_missing_cli_count",
         "metadata_dangling_cli_count",
         "metadata_duplicate_cli_count",
+        "metadata_null_timestamp_count",
         "cwd_junction_mismatch_count",
         "cwd_slug_mismatch_count",
         "truncated_jsonl_count",

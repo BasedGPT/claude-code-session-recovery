@@ -1,6 +1,6 @@
 DIAGNOSE -- Claude Code Desktop Session Recovery Tools
 ------------------------------------------------------------
-Diagnosis ID : 555b5dde
+Diagnosis ID : fa4adccc
 Metadata     : 2 files  (2 with cliSessionId,  0 missing)
 JSONL files  : 0
 
@@ -15,6 +15,6 @@ PROBLEM FOUND: Session is in the session list but its conversation history is mi
   Safety : Quit Claude Desktop fully before restoring. Diagnose is read-only.
 
   To repair -- dry-run first, review output, then add --apply:
-    python tools/sessions/restore_from_vss.py --diagnosis-id 555b5dde
-    python tools/sessions/restore_from_vss.py --diagnosis-id 555b5dde --apply
+    python tools/sessions/restore_from_vss.py --diagnosis-id fa4adccc
+    python tools/sessions/restore_from_vss.py --diagnosis-id fa4adccc --apply
 

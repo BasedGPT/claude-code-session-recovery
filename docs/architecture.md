@@ -256,15 +256,17 @@ All UUIDs in fixtures are deterministic fakes of the form `fixture-NN-XXXX-0000-
 
 ## Diagnosis ID hash construction
 
-The `diagnosis_id` is an 8-hex SHA-256 of these snapshot fields only:
+The `diagnosis_id` is an 8-hex SHA-256 of these snapshot fields only (the `structural_keys` tuple in `make_diagnosis_id`):
 
 ```
 total_metadata_count, metadata_with_cli_count, metadata_missing_cli_count,
-metadata_dangling_cli_count, cwd_junction_mismatch_count, cwd_prefix_types,
-jsonl_count, schema_version
+metadata_dangling_cli_count, metadata_duplicate_cli_count,
+metadata_null_timestamp_count, cwd_junction_mismatch_count,
+cwd_slug_mismatch_count, truncated_jsonl_count, jsonl_orphan_count,
+cwd_prefix_types, jsonl_count, schema_version, mapped_drive_unc_mismatch_count
 ```
 
-Version fields (`desktop_version`, `cli_version`) and process state (`desktop_running`) are excluded. A mutator gets a mismatch if the broken state changes between diagnosis and repair, but not if the CLI version is updated in the meantime. Fixture-mode runs skip live system detection entirely, so golden outputs are identical across environments.
+Every structural detection signal is included, so two states get the same ID only when they are structurally identical. Version fields (`desktop_version`, `cli_version`) and process state (`desktop_running`) are excluded. A mutator gets a mismatch if the broken state changes between diagnosis and repair, but not if the CLI version is updated in the meantime. Fixture-mode runs skip live system detection entirely, so golden outputs are identical across environments.
 
 ---
 

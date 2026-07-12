@@ -1,5 +1,5 @@
 {
-  "diagnosis_id": "4b16ba10",
+  "diagnosis_id": "bf01ea3d",
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
@@ -14,7 +14,7 @@
       "id": "blank-pane-missing-cli",
       "domain": "session",
       "mutator": "tools/sessions/repair_session_metadata.py",
-      "next_command": "python tools/sessions/repair_session_metadata.py --diagnosis-id 4b16ba10",
+      "next_command": "python tools/sessions/repair_session_metadata.py --diagnosis-id bf01ea3d",
       "safety_preconditions": [
         "Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime."
       ]

@@ -564,17 +564,19 @@ def measure_preserved(target_path, preserved):
 def write_sentinel(stub_path, manifest):
     """Drop a UX breadcrumb at the stub. Desktop's session picker may still
     point here -- this file explains where things went."""
+    quarantine_path = os.path.relpath(manifest["quarantine_path"], stub_path)
+    manifest_path = os.path.relpath(manifest["manifest_path"], stub_path)
     text = (
         'This worktree was shrunk to save disk space.\n\n'
         f'Operation ID: {manifest["operation_id"]}\n'
         f'Branch: {manifest["branch"]}\n'
-        f'Quarantine: {manifest["quarantine_path"]}\n'
-        f'Manifest: {manifest["manifest_path"]}\n'
+        f'Quarantine: {quarantine_path}\n'
+        f'Manifest: {manifest_path}\n'
         f'Shrunk: {manifest["start_timestamp"]}\n\n'
         'To rematerialise: from this directory, run\n'
         f'  git checkout {manifest["branch"]} -- .\n\n'
         'To restore the original folder (untracked files included):\n'
-        f'  Move-Item "{manifest["quarantine_path"]}" .\n\n'
+        f'  Move-Item "{quarantine_path}" .\n\n'
         f'The branch is preserved at {manifest["head_sha"]}. If git\'s view of\n'
         'the branch has moved since shrink, the rematerialised tree will differ\n'
         'from the quarantined original.\n'

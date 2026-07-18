@@ -6,11 +6,14 @@ import sys
 
 TOOLS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools")
 SESSIONS = os.path.join(TOOLS, "sessions")
+WORKTREES = os.path.join(TOOLS, "worktrees")
 sys.path.insert(0, TOOLS)
 sys.path.insert(0, SESSIONS)
+sys.path.insert(0, WORKTREES)
 
 import diagnose
 import find_missing_jsonls_in_backup as backup_search
+import worktree_shrink
 
 
 def test_redact_user_home(monkeypatch):
@@ -37,3 +40,23 @@ def test_recursive_search_quiet_hides_identifiers_and_paths(tmp_path, capsys):
 
     assert found == 1
     assert capsys.readouterr().out == ""
+
+
+def test_worktree_sentinel_uses_relative_recovery_paths(tmp_path):
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    manifest = {
+        "operation_id": "test-operation",
+        "branch": "test-branch",
+        "quarantine_path": str(tmp_path / "private-root" / "quarantine"),
+        "manifest_path": str(tmp_path / "private-root" / "manifest.json"),
+        "start_timestamp": "2026-07-18T00:00:00+00:00",
+        "head_sha": "a" * 40,
+    }
+
+    worktree_shrink.write_sentinel(str(stub), manifest)
+    content = (stub / worktree_shrink.SENTINEL_FILE).read_text(encoding="utf-8")
+
+    assert str(tmp_path) not in content
+    assert os.path.relpath(manifest["quarantine_path"], stub) in content
+    assert os.path.relpath(manifest["manifest_path"], stub) in content

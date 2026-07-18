@@ -595,6 +595,22 @@ def _detect_install_type():
     return "exe", None
 
 
+def _redact_user_home(path):
+    """Replace the current user's home prefix before displaying or exporting a path."""
+    if not isinstance(path, str) or not path:
+        return path
+    home = os.path.abspath(os.path.expanduser("~"))
+    path_norm = os.path.normcase(os.path.normpath(path))
+    home_norm = os.path.normcase(os.path.normpath(home))
+    if path_norm == home_norm:
+        return "%USERPROFILE%" if platform.system() == "Windows" else "~"
+    home_prefix = home_norm.rstrip("\\/") + os.sep
+    if path_norm.startswith(home_prefix):
+        placeholder = "%USERPROFILE%" if platform.system() == "Windows" else "~"
+        return placeholder + path[len(home):]
+    return path
+
+
 def _detect_running_inside_desktop():
     """Return True if this process is a descendant of claude.exe.
 
@@ -780,7 +796,7 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None,
 
     if snapshot.get("install_type") == "msix":
         lines.append("NOTE: Microsoft Store (MSIX) install detected.")
-        msix_path = snapshot.get("msix_real_path")
+        msix_path = _redact_user_home(snapshot.get("msix_real_path"))
         if msix_path:
             lines.append(f"  Data path: {msix_path}")
         lines.append("  diagnose.py is read-only and works correctly on MSIX.")
@@ -967,7 +983,7 @@ def main():
             },
             "schema_probe": snapshot["schema_version"],
             "install_type": snapshot.get("install_type"),
-            "msix_real_path": snapshot.get("msix_real_path"),
+            "msix_real_path": _redact_user_home(snapshot.get("msix_real_path")),
             "desktop_running": snapshot["desktop_running"],
             "matched_problems": [
                 {

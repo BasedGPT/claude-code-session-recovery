@@ -175,7 +175,8 @@ def _search_location_recursive(location_dir, dangling_sids, quiet=False):
             stem = fname[:-6]  # strip ".jsonl"
             if stem in target_sids:
                 full_path = os.path.join(dirpath, fname)
-                print("FOUND: {} at {}".format(stem, full_path))
+                if not quiet:
+                    print("FOUND: {} at {}".format(stem, full_path))
                 found += 1
     return found
 
@@ -240,9 +241,9 @@ def main():
     print("=== Recoverable from backup ({}) ===".format(len(in_backup)))
     if not backup_roots and not use_defaults:
         print("  (no backup roots configured -- edit BACKUP_ROOTS in this script or use --backup)")
-    for meta_file, cli_sid, title, hits in in_backup:
-        print("  {} {} {}".format(meta_file, cli_sid[:8], title))
-        if not args.quiet:
+    if not args.quiet:
+        for meta_file, cli_sid, title, hits in in_backup:
+            print("  {} {} {}".format(meta_file, cli_sid[:8], title))
             for h in hits:
                 print("      -> {}".format(h))
 
@@ -253,8 +254,9 @@ def main():
         print("  listed here.")
         if args.backup and not_found:
             print("  For a full recovery checklist: docs/recovering-deleted-jsonls.md")
-    for meta_file, cli_sid, title in not_found:
-        print("  {} {} {}".format(meta_file, cli_sid[:8], title))
+    if not args.quiet:
+        for meta_file, cli_sid, title in not_found:
+            print("  {} {} {}".format(meta_file, cli_sid[:8], title))
 
     print()
     print("Summary: {} recoverable from backup, {} not found.".format(
@@ -284,17 +286,25 @@ def _probe_default_locations(dangling_sids, quiet=False):
 
     if not existing_dirs:
         print("No default backup locations found. Locations checked:")
-        for p in checked_patterns:
-            print("  {}".format(p))
+        if not quiet:
+            for p in checked_patterns:
+                print("  {}".format(p))
         print("See docs/recovering-deleted-jsonls.md for recovery options.")
         return
 
     total_found = 0
+    if quiet:
+        print("Searching {} default backup location(s) ...".format(len(existing_dirs)))
     for location_dir in existing_dirs:
-        print("Searching {} ...".format(location_dir))
+        if not quiet:
+            print("Searching {} ...".format(location_dir))
         count = _search_location_recursive(location_dir, dangling_sids, quiet=quiet)
         total_found += count
-        print("  {} match(es) found.".format(count))
+        if not quiet:
+            print("  {} match(es) found.".format(count))
+
+    if quiet:
+        print("{} match(es) found.".format(total_found))
 
     print()
     if total_found == 0:

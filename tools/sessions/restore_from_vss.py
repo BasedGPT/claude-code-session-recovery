@@ -224,8 +224,8 @@ def _shadow_projects_path(device_object, projects_dir):
     Return the shadow copy equivalent of projects_dir.
 
     e.g. device='\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy14',
-         projects_dir='C:\\Users\\Robbie\\.claude\\projects'
-         -> '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy14\\Users\\Robbie\\.claude\\projects'
+         projects_dir='C:\\Users\\ExampleUser\\.claude\\projects'
+         -> '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy14\\Users\\ExampleUser\\.claude\\projects'
     """
     _, path_from_drive = os.path.splitdrive(projects_dir)
     return device_object + path_from_drive

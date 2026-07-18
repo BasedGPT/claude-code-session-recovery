@@ -52,7 +52,7 @@ Claude sessions have two parts: Desktop metadata (`%APPDATA%\Claude\claude-code-
 
 - Python 3.11+, standard library only (stdlib `zoneinfo` used by some tools; no pip installs required)
 - PowerShell 5.1+ for `worktree_inspector.ps1`
-- Windows 11 (no macOS or Linux support in v1)
+- Windows 11 and macOS; individual tools document platform-specific limits
 - No external APIs, no network calls, no telemetry
 
 ---

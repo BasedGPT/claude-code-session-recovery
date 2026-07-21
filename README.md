@@ -9,7 +9,7 @@ Something broke somewhere with your sessions in Claude Desktop. Because I'm a bi
 
 ## Fix it with Claude Code (or any AI)
 
-This runs best from a **Claude Code CLI session**, not from Claude Desktop because the Desktop app needs to be closed to apply the fixes. If you run it from Desktop then, the tool will detect that and warn you and give you the instructions on what to do if you're still more comfortable running from Claude Desktop.
+This runs best from a **Claude Code CLI session** (or Codex/ChatGPT), not from Claude Desktop because the Desktop app needs to be closed to apply the fixes. If you run it from Desktop, the tool will detect it, warn you and give you instructions if you're still more comfortable running from Claude Desktop.
 
 **Step 1 — open a CLI session**
 

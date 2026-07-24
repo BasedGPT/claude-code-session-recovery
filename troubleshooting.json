@@ -134,5 +134,19 @@
         {"snapshot.metadata_null_timestamp_count": {">=": 1}}
       ]
     }
+  },
+  {
+    "id": "account-uuid-rotation",
+    "domain": "session",
+    "problem": "Logout/login rotated the active account/organisation UUID pair, leaving populated metadata under an older pair while Desktop reads a new empty pair",
+    "what_to_do": "Run tools/diagnose.py first. It will enumerate every Desktop account/organisation pair and show which pairs contain local_*.json metadata.",
+    "details": "docs/session-recovery.md#account-uuid-rotation",
+    "safety": "No automatic repair is available. Diagnose is read-only and safe to run anytime.",
+    "mutator": null,
+    "match": {
+      "any": [
+        {"snapshot.account_uuid_rotation_count": {">=": 1}}
+      ]
+    }
   }
 ]

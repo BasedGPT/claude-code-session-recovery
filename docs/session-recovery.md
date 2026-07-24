@@ -228,3 +228,25 @@ PROBLEM FOUND: The entire session list is empty after every Desktop restart, eve
 **Repair (manual).** Quit Claude Desktop fully and verify no processes remain. Move the flagged `local_*.json` files out of `claude-code-sessions/<account>/<org>/` into a backup folder — quarantine, don't delete. Restart Desktop; the list should populate. If you want the quarantined session back in the list afterwards, fill its `createdAt`/`updatedAt` from the first and last `timestamp` records of its transcript JSONL and move the file back.
 
 **Recovery time:** 5 minutes.
+
+---
+
+<a id="account-uuid-rotation"></a>
+
+## Existing sessions remain under an older account/organisation pair
+
+**What you see.** After logging out and back in, Claude Desktop opens with an empty session history even though the older `local_*.json` files are still present under the Claude Desktop data directory.
+
+**Why it happens (plain).** Desktop stores session metadata under an account UUID and an organisation UUID. Logout/login can rotate that pair. Desktop then reads the new pair, while the populated metadata remains under the older pair.
+
+**What `diagnose.py` reports.** When more than one pair exists, the diagnostic lists every pair and its `local_*.json` count. A populated pair alongside an empty pair produces a read-only `account-uuid-rotation` finding.
+
+```
+Desktop pairs : 2
+  account=<older-account-uuid> organisation=<older-organisation-uuid> local_*.json=12
+  account=<new-account-uuid> organisation=<new-organisation-uuid> local_*.json=0
+```
+
+**Recovery.** No automatic repair is provided by this toolkit. Confirm which pair Desktop currently reads and preserve the populated older pair before deciding on any manual recovery.
+
+**Safety.** `diagnose.py` only enumerates directories and reads metadata. It does not move, copy, rename, delete, or rewrite user data.

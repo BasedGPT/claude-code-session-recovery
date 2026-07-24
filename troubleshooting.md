@@ -120,4 +120,18 @@ Run `python tools/diagnose.py` first — it reads this table, probes your state,
 
 ---
 
+### account-uuid-rotation
+
+**Symptom:** After logout/login, Desktop shows no existing sessions even though the older session metadata is still on disk.
+
+**Root cause:** Logout/login rotated the active account and organisation UUID pair. Desktop reads the new pair, which is empty, while populated `local_*.json` metadata remains under the older pair.
+
+**Fix:** `python tools/diagnose.py` will enumerate every Desktop account/organisation pair and show which pairs contain `local_*.json` metadata. No automatic repair is available yet.
+
+**Safety:** `diagnose.py` is read-only and safe to run anytime. Do not move or rewrite metadata based on the inventory without first confirming which pair Desktop currently uses.
+
+**Details:** [docs/session-recovery.md#account-uuid-rotation](docs/session-recovery.md#account-uuid-rotation)
+
+---
+
 *More rows are added as new failure modes are confirmed and fixture-tested. See [troubleshooting.json](troubleshooting.json) for the machine-readable version.*

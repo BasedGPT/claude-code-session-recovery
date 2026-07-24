@@ -298,8 +298,20 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
     """
     # Collect all metadata files
     meta_files = []
+    desktop_session_pairs = []
     for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
-        for f in sorted(glob.glob(os.path.join(meta_dir, "local_*.json"))):
+        local_metadata_files = [
+            f for f in sorted(glob.glob(os.path.join(meta_dir, "local_*.json")))
+            if os.path.isfile(f)
+        ]
+        desktop_session_pairs.append(
+            {
+                "account_uuid": _acct,
+                "organisation_uuid": _org,
+                "local_metadata_count": len(local_metadata_files),
+            }
+        )
+        for f in local_metadata_files:
             try:
                 with open(f, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
@@ -440,7 +452,7 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         running_inside_desktop = _detect_running_inside_desktop() if desktop_running else False
         install_type, msix_real_path = _detect_install_type()
 
-    return {
+    snapshot = {
         "total_metadata_count": total,
         "metadata_with_cli_count": with_cli,
         "metadata_missing_cli_count": missing_cli,
@@ -463,6 +475,15 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         "mapped_drive_unc_mismatch_count": mapped_drive_count,
         "mapped_drive_affected_drives": mapped_drive_letters,
     }
+    if len(desktop_session_pairs) > 1:
+        snapshot["desktop_session_pairs"] = desktop_session_pairs
+        if (
+            any(pair["local_metadata_count"] > 0 for pair in desktop_session_pairs)
+            and any(pair["local_metadata_count"] == 0 for pair in desktop_session_pairs)
+        ):
+            snapshot["account_uuid_rotation_count"] = 1
+
+    return snapshot
 
 
 def _detect_desktop_version():
@@ -681,6 +702,8 @@ def make_diagnosis_id(snapshot):
         "jsonl_count",
         "schema_version",
         "mapped_drive_unc_mismatch_count",
+        "desktop_session_pairs",
+        "account_uuid_rotation_count",
     )
     structural = {k: snapshot[k] for k in structural_keys if k in snapshot}
     canonical = json.dumps(structural, sort_keys=True, separators=(",", ":"))
@@ -762,6 +785,18 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None,
         f"  {snapshot['metadata_missing_cli_count']} missing)"
     )
     lines.append(f"JSONL files  : {snapshot['jsonl_count']}")
+    if snapshot.get("desktop_session_pairs"):
+        pairs = snapshot["desktop_session_pairs"]
+        lines.append(f"Desktop pairs : {len(pairs)}")
+        for pair in pairs:
+            lines.append(
+                "  account={} organisation={} local_*.json={}".format(
+                    pair["account_uuid"],
+                    pair["organisation_uuid"],
+                    pair["local_metadata_count"],
+                )
+            )
+        lines.append("")
     if snapshot.get("truncated_jsonl_count", 0) > 0:
         lines.append(
             f"Truncated    : {snapshot['truncated_jsonl_count']} session(s) have fewer"

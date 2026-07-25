@@ -32,15 +32,20 @@ import glob
 import json
 import os
 import platform
-import shutil
 import sys
 from datetime import datetime, timezone
 
-# Import shared helpers from tools/diagnose.py (parent directory).
+# Import shared session-state helpers from tools/ (parent directory).
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from diagnose import build_snapshot, make_diagnosis_id, _find_meta_dirs
+    from session_state import find_metadata_directories
+    from mutator_safety import (
+        current_snapshot_and_diagnosis_id, diagnosis_mode,
+        resolve_state_paths, verified_backup,
+        write_json_in_place,
+    )
+    from transcript_files import build_transcript_index, first_iso_timestamp_and_user
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/repair_session_metadata.py")
@@ -147,57 +152,6 @@ def _parse_created_at_ms(value):
     return None
 
 
-def _read_jsonl_first_ts_and_user(jsonl_path):
-    """Return (first_ts_ms, first_user_text) from a JSONL transcript.
-
-    Reads records sequentially until both values are found or EOF.
-    Returns (None, None) on any error.
-    """
-    first_ts_ms = None
-    first_user = None
-    try:
-        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                # Extract timestamp from first record that has one
-                if first_ts_ms is None:
-                    ts = rec.get("timestamp")
-                    if ts:
-                        try:
-                            dt = datetime.fromisoformat(
-                                ts.replace("Z", "+00:00")
-                            )
-                            first_ts_ms = int(dt.timestamp() * 1000)
-                        except ValueError:
-                            pass
-                # Extract first user message text
-                if first_user is None and rec.get("type") == "user":
-                    msg = rec.get("message", {})
-                    if isinstance(msg, dict) and msg.get("role") == "user":
-                        content = msg.get("content", "")
-                        if isinstance(content, str):
-                            first_user = content[:80]
-                        elif isinstance(content, list):
-                            for item in content:
-                                if (
-                                    isinstance(item, dict)
-                                    and item.get("type") == "text"
-                                ):
-                                    first_user = item.get("text", "")[:80]
-                                    break
-                if first_ts_ms is not None and first_user is not None:
-                    break
-    except OSError:
-        pass
-    return first_ts_ms, first_user
-
-
 def index_metadata(appdata_claude_dir):
     """Return (by_cli, broken_no_cli).
 
@@ -206,7 +160,7 @@ def index_metadata(appdata_claude_dir):
     """
     by_cli = {}
     broken = []
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
+    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         for f in sorted(glob.glob(os.path.join(meta_dir, "local_*.json"))):
             try:
                 with open(f, "r", encoding="utf-8") as fh:
@@ -230,18 +184,9 @@ def index_metadata(appdata_claude_dir):
 def index_jsonls(projects_dir):
     """Return {session_id: (jsonl_path, first_ts_ms, first_user_text)}."""
     out = {}
-    if not os.path.isdir(projects_dir):
-        return out
-    for slug in sorted(os.listdir(projects_dir)):
-        slug_dir = os.path.join(projects_dir, slug)
-        if not os.path.isdir(slug_dir):
-            continue
-        for f in glob.glob(os.path.join(slug_dir, "*.jsonl")):
-            sid = os.path.splitext(os.path.basename(f))[0]
-            if len(sid) != 36:
-                continue
-            first_ts_ms, first_user = _read_jsonl_first_ts_and_user(f)
-            out[sid] = (f, first_ts_ms, first_user)
+    for sid, path in build_transcript_index(projects_dir).items():
+        first_ts_ms, first_user = first_iso_timestamp_and_user(path)
+        out[sid] = (path, first_ts_ms, first_user)
     return out
 
 
@@ -335,30 +280,26 @@ def main():
     args = ap.parse_args()
 
     # --- Gate 3: diagnosis-token check ---
-    force_mode = args.force_diagnosis_id == "audit-only"
-    if not args.diagnosis_id and not force_mode:
+    force_mode, invocation_error = diagnosis_mode(
+        args.diagnosis_id, args.force_diagnosis_id, args.apply,
+    )
+    if invocation_error == "missing":
         print("ERROR: --diagnosis-id required.")
         print("Run: python tools/diagnose.py")
         sys.exit(2)
-    if args.apply and force_mode:
+    if invocation_error == "force_apply":
         print("ERROR: --apply cannot be combined with --force-with-diagnosis-id=audit-only.")
         sys.exit(2)
 
     # Resolve directories
-    if args.state:
-        state_abs = os.path.abspath(args.state)
-        appdata_claude_dir = os.path.join(state_abs, "appdata", "Claude")
-        projects_dir = os.path.join(state_abs, "projects")
-    else:
-        appdata_claude_dir = APPDATA_CLAUDE_DIR
-        projects_dir = PROJECTS_DIR
+    appdata_claude_dir, projects_dir = resolve_state_paths(
+        args.state, APPDATA_CLAUDE_DIR, PROJECTS_DIR,
+    )
 
     # Compute current snapshot and diagnosis ID
-    snapshot = build_snapshot(
-        appdata_claude_dir, projects_dir,
-        fixture_mode=(args.state is not None),
+    snapshot, current_id = current_snapshot_and_diagnosis_id(
+        appdata_claude_dir, projects_dir, fixture_mode=(args.state is not None),
     )
-    current_id = make_diagnosis_id(snapshot)
 
     if not force_mode and current_id != args.diagnosis_id:
         print(
@@ -439,12 +380,11 @@ def main():
         print()
 
         if args.apply:
-            shutil.copy2(path, os.path.join(BACKUP_DIR, fname))
+            verified_backup(path, os.path.join(BACKUP_DIR, fname))
             repaired_meta = dict(meta)
             repaired_meta["cliSessionId"] = cli_match
             repaired_meta.pop("transcriptUnavailable", None)
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(repaired_meta, fh, indent=2)
+            write_json_in_place(path, repaired_meta)
 
         repaired += 1
 

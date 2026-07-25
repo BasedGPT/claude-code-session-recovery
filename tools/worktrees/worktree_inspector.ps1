@@ -44,6 +44,14 @@ $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyy-MM-dd-HH-mm'
 $outFile = Join-Path $OutDir ("worktree-inspector-" + $ts + ".md")
 
+# Cross-language contract with worktree_lifecycle.py. Keep these literal
+# values in sync; this read-only inspector intentionally does not invoke
+# Python or load executable tool code.
+$MarkerReady = '.shrink-when-safe'
+$MarkerInProgressPrefix = '.shrink-in-progress.'
+$SentinelFilename = '.worktree-shrunk.txt'
+$SentinelRequiredFields = @('Operation ID:', 'Branch:', 'Quarantine:', 'Manifest:', 'Shrunk:')
+
 # Allowlist mirrors worktree_shrink.py. Keep in sync if either changes.
 $DisposableDirs = @(
     'node_modules','__pycache__','.pytest_cache','.next','dist','build',
@@ -65,10 +73,10 @@ if ($Queue) {
     }
     $hits = @()
     Get-ChildItem $wtRoot -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
-        $ready = Join-Path $_.FullName '.shrink-when-safe'
-        $inProg = Get-ChildItem $_.FullName -Filter '.shrink-in-progress.*' -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+        $ready = Join-Path $_.FullName $MarkerReady
+        $inProg = Get-ChildItem $_.FullName -Filter ($MarkerInProgressPrefix + '*') -Force -ErrorAction SilentlyContinue | Select-Object -First 1
         if (Test-Path $ready) {
-            $hits += [PSCustomObject]@{ Name=$_.Name; State='READY'; Marker='.shrink-when-safe' }
+            $hits += [PSCustomObject]@{ Name=$_.Name; State='READY'; Marker=$MarkerReady }
         } elseif ($inProg) {
             $hits += [PSCustomObject]@{ Name=$_.Name; State='IN_PROGRESS'; Marker=$inProg.Name }
         }
@@ -178,14 +186,13 @@ foreach ($t in $allTargets) {
             $row.Notes += 'EMPTY DIR (no .git pointer)'
         } else {
             $entryNames = @($entries | ForEach-Object { $_.Name })
-            $allowedStubNames = @('.git', '.worktree-shrunk.txt')
+            $allowedStubNames = @('.git', $SentinelFilename)
             $extraStubEntries = @($entryNames | Where-Object { $_ -notin $allowedStubNames })
-            if (($entryNames -contains '.git') -and ($entryNames -contains '.worktree-shrunk.txt') -and $extraStubEntries.Count -eq 0) {
-                $sentinel = Join-Path $t.Path '.worktree-shrunk.txt'
+            if (($entryNames -contains '.git') -and ($entryNames -contains $SentinelFilename) -and $extraStubEntries.Count -eq 0) {
+                $sentinel = Join-Path $t.Path $SentinelFilename
                 try {
                     $sentinelText = Get-Content -LiteralPath $sentinel -Raw -ErrorAction Stop
-                    $required = @('Operation ID:', 'Branch:', 'Quarantine:', 'Manifest:', 'Shrunk:')
-                    $missing = @($required | Where-Object { $sentinelText -notmatch [regex]::Escape($_) })
+                    $missing = @($SentinelRequiredFields | Where-Object { $sentinelText -notmatch [regex]::Escape($_) })
                     if ($missing.Count -eq 0) {
                         $row.IsStub = $true
                     } else {
@@ -203,10 +210,10 @@ foreach ($t in $allTargets) {
         }
 
         # Shrink markers
-        if (Test-Path (Join-Path $t.Path '.shrink-when-safe')) {
+        if (Test-Path (Join-Path $t.Path $MarkerReady)) {
             $row.ShrinkMarkerReady = $true
         }
-        $inProg = $entries | Where-Object { $_.Name -like '.shrink-in-progress.*' } | Select-Object -First 1
+        $inProg = $entries | Where-Object { $_.Name -like ($MarkerInProgressPrefix + '*') } | Select-Object -First 1
         if ($inProg) {
             $row.ShrinkMarkerInProgress = $inProg.Name
             try {

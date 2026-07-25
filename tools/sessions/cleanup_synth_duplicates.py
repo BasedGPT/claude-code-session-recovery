@@ -32,7 +32,6 @@ import glob
 import json
 import os
 import platform
-import shutil
 import sys
 from datetime import datetime, timezone
 
@@ -40,7 +39,11 @@ from datetime import datetime, timezone
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from diagnose import build_snapshot, make_diagnosis_id, _find_meta_dirs
+    from session_state import find_metadata_directories
+    from mutator_safety import (
+        current_snapshot_and_diagnosis_id, diagnosis_mode, resolve_state_paths,
+        verified_backup,
+    )
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/cleanup_synth_duplicates.py")
@@ -113,7 +116,7 @@ def _created_display(ms):
 def index_metadata(appdata_claude_dir):
     """Return list of (path, parsed_dict) for all local_*.json files."""
     rows = []
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
+    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         for f in sorted(glob.glob(os.path.join(meta_dir, "local_*.json"))):
             try:
                 with open(f, "r", encoding="utf-8") as fh:
@@ -204,30 +207,27 @@ def main():
     args = ap.parse_args()
 
     # --- Gate 3: diagnosis-token check ---
-    force_mode = args.force_diagnosis_id == "audit-only"
-    if not args.diagnosis_id and not force_mode:
+    force_mode, invocation_error = diagnosis_mode(
+        args.diagnosis_id, args.force_diagnosis_id, args.apply,
+    )
+    if invocation_error == "missing":
         print("ERROR: --diagnosis-id required.")
         print("Run: python tools/diagnose.py")
         sys.exit(2)
-    if args.apply and force_mode:
+    if invocation_error == "force_apply":
         print("ERROR: --apply cannot be combined with --force-with-diagnosis-id=audit-only.")
         sys.exit(2)
 
     # Resolve directories
-    if args.state:
-        state_abs = os.path.abspath(args.state)
-        appdata_claude_dir = os.path.join(state_abs, "appdata", "Claude")
-        projects_dir = os.path.join(state_abs, "projects")
-    else:
-        appdata_claude_dir = APPDATA_CLAUDE_DIR
-        projects_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+    appdata_claude_dir, projects_dir = resolve_state_paths(
+        args.state, APPDATA_CLAUDE_DIR,
+        os.path.join(os.path.expanduser("~"), ".claude", "projects"),
+    )
 
     # Compute current snapshot and diagnosis ID
-    snapshot = build_snapshot(
-        appdata_claude_dir, projects_dir,
-        fixture_mode=(args.state is not None),
+    snapshot, current_id = current_snapshot_and_diagnosis_id(
+        appdata_claude_dir, projects_dir, fixture_mode=(args.state is not None),
     )
-    current_id = make_diagnosis_id(snapshot)
 
     if not force_mode and current_id != args.diagnosis_id:
         print(
@@ -298,7 +298,7 @@ def main():
             print()
 
             if args.apply:
-                shutil.copy2(path, os.path.join(BACKUP_DIR, fname))
+                verified_backup(path, os.path.join(BACKUP_DIR, fname))
                 os.remove(path)
 
             deleted += 1

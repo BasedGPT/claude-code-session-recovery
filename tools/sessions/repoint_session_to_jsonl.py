@@ -49,17 +49,18 @@ import glob
 import json
 import os
 import platform
-import shutil
 import sys
 from datetime import datetime
 
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from diagnose import (
-        build_snapshot, make_diagnosis_id, _find_meta_dirs,
-        _build_jsonl_index, _slug_encode,
+    from session_state import find_metadata_directories, slug_encode
+    from mutator_safety import (
+        atomic_write_json, current_snapshot_and_diagnosis_id, diagnosis_mode,
+        resolve_state_paths, verified_backup,
     )
+    from transcript_files import build_transcript_index, first_cwd
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/repoint_session_to_jsonl.py")
@@ -111,39 +112,15 @@ KNOWN_DO_NOT_RUN = [
 
 
 # ---------------------------------------------------------------------------
-# JSONL reading
-# ---------------------------------------------------------------------------
-
-def _read_cwd_from_jsonl(path):
-    """Return the first cwd field found in a JSONL transcript, or None."""
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                cwd = rec.get("cwd")
-                if cwd:
-                    return cwd
-    except OSError:
-        pass
-    return None
-
-
-# ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
 
 def _find_mismatches(appdata_claude_dir, projects_dir):
     """Return list of (meta_path, meta_dict, old_cwd, new_cwd, actual_slug_dir)."""
-    jsonl_index = _build_jsonl_index(projects_dir)
+    jsonl_index = build_transcript_index(projects_dir)
     results = []
 
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
+    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         for f in sorted(glob.glob(os.path.join(meta_dir, "local_*.json"))):
             try:
                 with open(f, "r", encoding="utf-8") as fh:
@@ -158,14 +135,14 @@ def _find_mismatches(appdata_claude_dir, projects_dir):
             if cli not in jsonl_index:
                 continue
 
-            expected_slug = _slug_encode(cwd)
+            expected_slug = slug_encode(cwd)
             jsonl_path = jsonl_index[cli]
             actual_slug_dir = os.path.basename(os.path.dirname(jsonl_path))
 
             if actual_slug_dir == expected_slug:
                 continue
 
-            new_cwd = _read_cwd_from_jsonl(jsonl_path)
+            new_cwd = first_cwd(jsonl_path)
             results.append((f, meta, cwd, new_cwd, actual_slug_dir))
 
     return results
@@ -190,7 +167,7 @@ def _plan_changes(meta, old_cwd, new_cwd, actual_slug_dir):
     # cwd is itself stale (e.g. a junction that has since been removed), and
     # writing it would leave the metadata pointing at a path that doesn't
     # resolve to the right slug either.
-    if _slug_encode(new_cwd) != actual_slug_dir:
+    if slug_encode(new_cwd) != actual_slug_dir:
         return None, [
             "WARN: cwd from JSONL ({!r}) encodes to slug {!r}, "
             "which does not match the actual JSONL directory {!r}. "
@@ -198,7 +175,7 @@ def _plan_changes(meta, old_cwd, new_cwd, actual_slug_dir):
             "(e.g. a junction that has been removed). "
             "Cannot automatically determine the correct cwd -- "
             "manual intervention required.".format(
-                new_cwd, _slug_encode(new_cwd), actual_slug_dir,
+                new_cwd, slug_encode(new_cwd), actual_slug_dir,
             )
         ]
 
@@ -265,27 +242,23 @@ def main():
     args = ap.parse_args()
 
     # Gate 3: diagnosis-token check
-    if not args.diagnosis_id:
+    force_mode, invocation_error = diagnosis_mode(
+        args.diagnosis_id, None, args.apply,
+    )
+    if invocation_error == "missing":
         print("ERROR: --diagnosis-id required.")
         print("Run: python tools/diagnose.py")
         sys.exit(2)
-
     # Resolve directories
-    if args.state:
-        state_abs = os.path.abspath(args.state)
-        appdata_claude_dir = os.path.join(state_abs, "appdata", "Claude")
-        projects_dir = os.path.join(state_abs, "projects")
-    else:
-        appdata_claude_dir = APPDATA_CLAUDE_DIR
-        projects_dir = PROJECTS_DIR
-
-    snapshot = build_snapshot(
-        appdata_claude_dir, projects_dir,
-        fixture_mode=(args.state is not None),
+    appdata_claude_dir, projects_dir = resolve_state_paths(
+        args.state, APPDATA_CLAUDE_DIR, PROJECTS_DIR,
     )
-    current_id = make_diagnosis_id(snapshot)
 
-    if current_id != args.diagnosis_id:
+    snapshot, current_id = current_snapshot_and_diagnosis_id(
+        appdata_claude_dir, projects_dir, fixture_mode=(args.state is not None),
+    )
+
+    if not force_mode and current_id != args.diagnosis_id:
         print(
             "ERROR: Diagnosis token mismatch.\n"
             "  Supplied : {}\n"
@@ -356,25 +329,16 @@ def main():
         os.makedirs(backup_dir, exist_ok=True)
         backup_path = os.path.join(backup_dir, meta_name)
         try:
-            shutil.copy2(meta_path, backup_path)
+            verified_backup(meta_path, backup_path)
         except OSError as e:
             print("  FAIL {}: backup failed: {}".format(meta_name, e))
             failed += 1
             continue
 
-        tmp_path = meta_path + ".tmp"
         try:
-            with open(tmp_path, "w", encoding="utf-8") as fh:
-                json.dump(new_meta, fh, indent=2)
-                fh.write("\n")
-            os.replace(tmp_path, meta_path)
+            atomic_write_json(meta_path, new_meta, trailing_newline=True)
         except OSError as e:
             print("  FAIL {}: write failed: {}".format(meta_name, e))
-            # Attempt to remove partial tmp
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
             failed += 1
             continue
 

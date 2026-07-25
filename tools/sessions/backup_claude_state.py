@@ -76,10 +76,9 @@ from lock_utils import acquire_lock, release_lock  # noqa: E402
 _DIAGNOSE_DIR = os.path.dirname(TOOL_DIR)
 sys.path.insert(0, _DIAGNOSE_DIR)
 try:
-    from diagnose import build_snapshot, _find_meta_dirs
+    from session_state import build_snapshot
 except ImportError:
     build_snapshot = None
-    _find_meta_dirs = None
 
 # --- Configuration ---
 # Edit these paths before running. BACKUPS_ROOT is the only required change.

@@ -22,10 +22,11 @@ Behaviour:
   - Per-stub atomic: a failure on one stub does not affect others.
 """
 import argparse
-import importlib.util
 import os
 import sys
 from pathlib import Path
+
+from worktree_lifecycle import SENTINEL_FILE, quiet_stub, stub_is_quieted
 
 # --- Configuration ---
 # WORKTREES_DIR: directory containing your worktree stubs.
@@ -34,22 +35,7 @@ from pathlib import Path
 _REPO_ROOT = Path(os.environ.get("CLAUDE_REPO_ROOT", os.getcwd()))
 WORKTREES_DIR = _REPO_ROOT / ".claude" / "worktrees"
 
-# Path to worktree_shrink.py (provides quiet_stub and stub_is_quieted).
-# Must be in the same directory as this script.
-_SHRINK_TOOL_PATH = Path(__file__).parent / "worktree_shrink.py"
-
-SENTINEL_FILENAME = ".worktree-shrunk.txt"
-
-
-def _load_shrink_module(shrink_path):
-    spec = importlib.util.spec_from_file_location(
-        "worktree_shrink_for_backfill", str(shrink_path)
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load worktree_shrink from {}".format(shrink_path))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+SENTINEL_FILENAME = SENTINEL_FILE
 
 
 def _classify_stub(path):
@@ -99,14 +85,6 @@ def main():
         print("ERROR: worktrees root does not exist: {}".format(root))
         sys.exit(2)
 
-    shrink_path = _SHRINK_TOOL_PATH
-    if not shrink_path.is_file():
-        print("ERROR: worktree_shrink.py not found at: {}".format(shrink_path))
-        print("It must be in the same directory as this script.")
-        sys.exit(2)
-
-    shrink_mod = _load_shrink_module(shrink_path)
-
     print("Backfill recovery-stub quietness ({})".format(
         "APPLY" if args.apply else "DRY-RUN"
     ))
@@ -144,7 +122,7 @@ def main():
     real_candidates = []
     already_quieted = []
     for entry in candidates:
-        if shrink_mod.stub_is_quieted(str(entry)):
+        if stub_is_quieted(str(entry), repo_root=str(_REPO_ROOT)):
             already_quieted.append(entry.name)
         else:
             real_candidates.append(entry)
@@ -166,7 +144,7 @@ def main():
     failures = []
     for i, entry in enumerate(real_candidates, 1):
         print("[{}/{}] quieting {} ...".format(i, len(real_candidates), entry.name))
-        ok = shrink_mod.quiet_stub(str(entry))
+        ok = quiet_stub(str(entry), repo_root=str(_REPO_ROOT))
         if ok:
             successes.append(entry.name)
             print("  OK")

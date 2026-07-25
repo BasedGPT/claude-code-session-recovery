@@ -46,7 +46,12 @@ from datetime import datetime, timezone
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from diagnose import build_snapshot, make_diagnosis_id, _find_meta_dirs, _build_jsonl_index
+    from session_state import find_metadata_directories
+    from mutator_safety import (
+        atomic_copy_file, atomic_write_json, current_snapshot_and_diagnosis_id,
+        diagnosis_mode, resolve_state_paths,
+    )
+    from transcript_files import build_transcript_index, iso_timestamp_ms, synthesis_summary
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/synth_session_metadata.py")
@@ -106,82 +111,6 @@ KNOWN_DO_NOT_RUN = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# JSONL reading
-# ---------------------------------------------------------------------------
-
-def _read_jsonl_summary(path):
-    """Walk a JSONL once and extract fields needed for metadata synthesis."""
-    first_ts = None
-    last_ts = None
-    first_user_text = None
-    last_model = None
-    cwd = None
-    user_turn_count = 0
-
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                ts = rec.get("timestamp")
-                if ts:
-                    if first_ts is None:
-                        first_ts = ts
-                    last_ts = ts
-
-                if cwd is None and rec.get("cwd"):
-                    cwd = rec["cwd"]
-
-                msg = rec.get("message")
-                if isinstance(msg, dict):
-                    role = msg.get("role")
-
-                    if role == "user" and rec.get("type") == "user":
-                        user_turn_count += 1
-                        if first_user_text is None:
-                            c = msg.get("content")
-                            if isinstance(c, str):
-                                first_user_text = c
-                            elif isinstance(c, list):
-                                for item in c:
-                                    if isinstance(item, dict) and item.get("type") == "text":
-                                        first_user_text = item.get("text", "")
-                                        break
-
-                    if role == "assistant":
-                        m = msg.get("model")
-                        if m:
-                            last_model = m
-    except OSError:
-        pass
-
-    return {
-        "first_ts": first_ts,
-        "last_ts": last_ts,
-        "first_user_text": first_user_text,
-        "last_model": last_model,
-        "cwd": cwd,
-        "user_turn_count": user_turn_count,
-    }
-
-
-def _iso_to_epoch_ms(iso_str):
-    if not iso_str:
-        return None
-    try:
-        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        return int(dt.timestamp() * 1000)
-    except ValueError:
-        return None
-
-
 def _derive_title(first_user_text, fallback_id):
     if not first_user_text:
         return "Recovered session {}".format(fallback_id[:8])
@@ -198,7 +127,7 @@ def _derive_title(first_user_text, fallback_id):
 
 def synthesise(cli_session_id, jsonl_path):
     """Build a synthetic metadata dict for one orphan JSONL."""
-    summary = _read_jsonl_summary(jsonl_path)
+    summary = synthesis_summary(jsonl_path)
     new_session_id = "local_{}".format(uuid.uuid4())
     cwd = summary["cwd"] or ""
 
@@ -207,8 +136,8 @@ def synthesise(cli_session_id, jsonl_path):
         "cliSessionId": cli_session_id,
         "cwd": cwd,
         "originCwd": cwd,
-        "createdAt": _iso_to_epoch_ms(summary["first_ts"]),
-        "lastActivityAt": _iso_to_epoch_ms(summary["last_ts"]),
+        "createdAt": iso_timestamp_ms(summary["first_ts"]) if summary["first_ts"] else None,
+        "lastActivityAt": iso_timestamp_ms(summary["last_ts"]) if summary["last_ts"] else None,
         "model": summary["last_model"] or "claude-sonnet-4-6",
         "isArchived": False,
         "title": _derive_title(summary["first_user_text"], cli_session_id),
@@ -228,7 +157,7 @@ def synthesise(cli_session_id, jsonl_path):
 def _find_orphan_jsonls(appdata_claude_dir, projects_dir):
     """Return {session_id: absolute_jsonl_path} for JSONLs with no metadata."""
     meta_cli_ids = set()
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
+    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         for f in glob.glob(os.path.join(meta_dir, "local_*.json")):
             try:
                 with open(f, "r", encoding="utf-8") as fh:
@@ -239,13 +168,13 @@ def _find_orphan_jsonls(appdata_claude_dir, projects_dir):
             if cli:
                 meta_cli_ids.add(cli)
 
-    jsonl_index = _build_jsonl_index(projects_dir)
+    jsonl_index = build_transcript_index(projects_dir)
     return {sid: path for sid, path in jsonl_index.items() if sid not in meta_cli_ids}
 
 
 def _find_meta_dir(appdata_claude_dir):
     """Return the first (and typically only) metadata directory."""
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
+    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         return meta_dir
     return None
 
@@ -288,29 +217,25 @@ def main():
     args = ap.parse_args()
 
     # Gate 3: diagnosis-token check
-    force_mode = args.force_diagnosis_id == "audit-only"
-    if not args.diagnosis_id and not force_mode:
+    force_mode, invocation_error = diagnosis_mode(
+        args.diagnosis_id, args.force_diagnosis_id, args.apply,
+    )
+    if invocation_error == "missing":
         print("ERROR: --diagnosis-id required.")
         print("Run: python tools/diagnose.py")
         sys.exit(2)
-    if args.apply and force_mode:
+    if invocation_error == "force_apply":
         print("ERROR: --apply cannot be combined with --force-with-diagnosis-id=audit-only.")
         sys.exit(2)
 
     # Resolve directories
-    if args.state:
-        state_abs = os.path.abspath(args.state)
-        appdata_claude_dir = os.path.join(state_abs, "appdata", "Claude")
-        projects_dir = os.path.join(state_abs, "projects")
-    else:
-        appdata_claude_dir = APPDATA_CLAUDE_DIR
-        projects_dir = PROJECTS_DIR
-
-    snapshot = build_snapshot(
-        appdata_claude_dir, projects_dir,
-        fixture_mode=(args.state is not None),
+    appdata_claude_dir, projects_dir = resolve_state_paths(
+        args.state, APPDATA_CLAUDE_DIR, PROJECTS_DIR,
     )
-    current_id = make_diagnosis_id(snapshot)
+
+    snapshot, current_id = current_snapshot_and_diagnosis_id(
+        appdata_claude_dir, projects_dir, fixture_mode=(args.state is not None),
+    )
 
     if not force_mode and current_id != args.diagnosis_id:
         print(
@@ -361,8 +286,7 @@ def main():
         out_path = os.path.join(out_dir, out_name)
 
         try:
-            with open(out_path, "w", encoding="utf-8") as fh:
-                json.dump(synth, fh, indent=2)
+            atomic_write_json(out_path, synth)
         except OSError as e:
             print("  FAIL  {} : could not write dry-run output: {}".format(sid, e))
             failed += 1
@@ -385,8 +309,7 @@ def main():
                 skipped += 1
                 continue
             try:
-                import shutil
-                shutil.copy2(out_path, apply_path)
+                atomic_copy_file(out_path, apply_path)
                 print("  APPLIED -> {}".format(apply_path))
             except OSError as e:
                 print("  FAIL  copy to AppData: {}".format(e))

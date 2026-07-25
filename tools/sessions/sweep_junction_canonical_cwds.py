@@ -37,7 +37,8 @@ import sys
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from diagnose import build_snapshot, _find_meta_dirs, _build_jsonl_index, _slug_encode, _cwd_type
+    from session_state import build_snapshot, classify_cwd, find_metadata_directories, slug_encode
+    from transcript_files import build_transcript_index
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/sweep_junction_canonical_cwds.py")
@@ -76,7 +77,7 @@ def main():
               "unsupported state to the maintainer.", file=sys.stderr)
         return 2
 
-    jsonl_index = _build_jsonl_index(projects_dir)
+    jsonl_index = build_transcript_index(projects_dir)
 
     counts = {"junction": 0, "canonical": 0, "other": 0}
     jsonl_at_expected = 0
@@ -87,7 +88,7 @@ def main():
     parse_errors = 0
     issues = []
 
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
+    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         for fname in sorted(os.listdir(meta_dir)):
             if not (fname.startswith("local_") and fname.endswith(".json")):
                 continue
@@ -109,7 +110,7 @@ def main():
 
             cli = d.get("cliSessionId") or ""
             title = (d.get("title") or "")[:50]
-            cwd_kind = _cwd_type(cwd)
+            cwd_kind = classify_cwd(cwd)
             counts[cwd_kind] = counts.get(cwd_kind, 0) + 1
 
             if cwd_kind == "junction":
@@ -119,7 +120,7 @@ def main():
                 no_cli += 1
                 continue
 
-            expected_slug = _slug_encode(cwd)
+            expected_slug = slug_encode(cwd)
             if cli in jsonl_index:
                 actual_slug = os.path.basename(os.path.dirname(jsonl_index[cli]))
                 if actual_slug == expected_slug:

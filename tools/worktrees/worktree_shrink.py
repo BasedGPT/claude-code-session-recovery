@@ -42,6 +42,21 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
+from worktree_lifecycle import (
+    MARKER_IN_PROGRESS_PREFIX,
+    MARKER_READY,
+    SENTINEL_FILE,
+    claim_marker,
+    find_in_progress_marker,
+    marker_payload,
+    quiet_stub,
+    stub_is_quieted,
+    update_marker_manifest,
+    validate_sentinel,
+    write_marker_payload,
+    write_sentinel,
+)
+
 if __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
@@ -56,10 +71,6 @@ WORKTREES_DIR = os.path.join(REPO_ROOT, '.claude', 'worktrees')
 QUARANTINE_DIR = os.path.join(WORKTREES_DIR, '.shrink-quarantine')
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKUP_DIR = os.path.join(TOOL_DIR, 'shrink-manifests')
-
-MARKER_READY = '.shrink-when-safe'
-MARKER_IN_PROGRESS_PREFIX = '.shrink-in-progress.'
-SENTINEL_FILE = '.worktree-shrunk.txt'
 
 # Untracked / ignored top-level paths matching these patterns are purged at
 # shrink time. The branch retains nothing about them. Used when scanning
@@ -411,38 +422,6 @@ def append_phase(manifest_data, manifest_path, phase, **extra):
     write_manifest(manifest_path, manifest_data)
 
 
-# ----- Marker handling -------------------------------------------------------
-
-def find_in_progress_marker(target_path):
-    if not os.path.isdir(target_path):
-        return None
-    for entry in os.listdir(target_path):
-        if entry.startswith(MARKER_IN_PROGRESS_PREFIX):
-            return entry
-    return None
-
-
-def claim_marker(target_path, name, op_ts):
-    """Atomic-claim the ready marker by renaming. Returns the new marker name,
-    or None if nothing to claim. Raises if a foreign in-progress marker is
-    already there (another processor's claim)."""
-    ready = os.path.join(target_path, MARKER_READY)
-    existing = find_in_progress_marker(target_path)
-    if existing:
-        raise RuntimeError(
-            f'in-progress marker already present: {existing}. '
-            f'Another processor may be running, or a previous shrink crashed. '
-            f'Use --resume <manifest> to continue, or remove the marker after '
-            f'verifying no process is alive.')
-    if not os.path.exists(ready):
-        return None
-    new_name = f'{MARKER_IN_PROGRESS_PREFIX}{os.getpid()}.{op_ts}'
-    new_path = os.path.join(target_path, new_name)
-    os.rename(ready, new_path)  # atomic on same filesystem
-    write_marker_payload(new_path, marker_payload(name, op_ts))
-    return new_name
-
-
 # ----- Shrink phases ---------------------------------------------------------
 
 def run_verification(name, target_path, branch, branch_mode, apply_mode):
@@ -561,77 +540,6 @@ def measure_preserved(target_path, preserved):
     return result
 
 
-def write_sentinel(stub_path, manifest):
-    """Drop a UX breadcrumb at the stub. Desktop's session picker may still
-    point here -- this file explains where things went."""
-    quarantine_path = os.path.relpath(manifest["quarantine_path"], stub_path)
-    manifest_path = os.path.relpath(manifest["manifest_path"], stub_path)
-    text = (
-        'This worktree was shrunk to save disk space.\n\n'
-        f'Operation ID: {manifest["operation_id"]}\n'
-        f'Branch: {manifest["branch"]}\n'
-        f'Quarantine: {quarantine_path}\n'
-        f'Manifest: {manifest_path}\n'
-        f'Shrunk: {manifest["start_timestamp"]}\n\n'
-        'To rematerialise: from this directory, run\n'
-        f'  git checkout {manifest["branch"]} -- .\n\n'
-        'To restore the original folder (untracked files included):\n'
-        f'  Move-Item "{quarantine_path}" .\n\n'
-        f'The branch is preserved at {manifest["head_sha"]}. If git\'s view of\n'
-        'the branch has moved since shrink, the rematerialised tree will differ\n'
-        'from the quarantined original.\n'
-    )
-    with open(os.path.join(stub_path, SENTINEL_FILE), 'w', encoding='utf-8') as f:
-        f.write(text)
-
-
-def validate_sentinel(stub_path):
-    sentinel = os.path.join(stub_path, SENTINEL_FILE)
-    if not os.path.isfile(sentinel):
-        return False, 'sentinel missing'
-    try:
-        with open(sentinel, encoding='utf-8') as f:
-            text = f.read()
-    except OSError as e:
-        return False, f'sentinel unreadable: {e}'
-    required = ('Operation ID:', 'Branch:', 'Quarantine:', 'Manifest:', 'Shrunk:')
-    missing = [r for r in required if r not in text]
-    if missing:
-        return False, 'sentinel missing fields: ' + ', '.join(missing)
-    return True, ''
-
-
-def marker_payload(name, op_ts, manifest_path=''):
-    return {
-        'op_id': op_ts,
-        'pid': os.getpid(),
-        'worktree': name,
-        'manifest_path': manifest_path,
-        'claimed_at': iso_now(),
-    }
-
-
-def write_marker_payload(marker_path, payload):
-    with open(marker_path, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, indent=2)
-
-
-def update_marker_manifest(target_path, claimed_marker, manifest_path):
-    if not claimed_marker:
-        return
-    marker_path = os.path.join(target_path, claimed_marker)
-    if not os.path.isfile(marker_path):
-        return
-    try:
-        with open(marker_path, encoding='utf-8') as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        payload = {}
-    payload['manifest_path'] = manifest_path
-    payload['updated_at'] = iso_now()
-    write_marker_payload(marker_path, payload)
-
-
 def post_validation(name, target_path, manifest, manifest_path):
     """Final checks after stub creation. Catches TOCTOU writes between verify
     and move, branch-ref movement during shrink, and sync-conflict races."""
@@ -677,7 +585,7 @@ def post_validation(name, target_path, manifest, manifest_path):
         problems.append(f'worktree {name} not in git worktree list after shrink')
 
     # 3a. Stub quietness: sparse-checkout configured so `git status` is silent.
-    if os.path.isdir(target_path) and not stub_is_quieted(target_path):
+    if os.path.isdir(target_path) and not stub_is_quieted(target_path, repo_root=REPO_ROOT):
         problems.append('stub is not quieted: core.sparseCheckout/Cone not set as expected')
 
     # 4. Sync conflict files. Resilio/OneDrive/Sync.com create these when concurrent
@@ -739,137 +647,12 @@ def recreate_stub_at_manifest_sha(target_path, manifest, manifest_path):
         write_manifest(manifest_path, manifest)
         print(f'  FAILED at stub-recreate: {err}')
         return False
-    if not quiet_stub(target_path):
+    if not quiet_stub(target_path, repo_root=REPO_ROOT):
         manifest['failure_reason'] = 'stub recreation quiet step failed'
         write_manifest(manifest_path, manifest)
         print('  FAILED at stub-recreate: quiet_stub failed')
         return False
     return True
-
-
-# ----- Stub quietness --------------------------------------------------------
-
-def quiet_stub(stub_path):
-    """Silence `git status` inside a --no-checkout stub by marking every index
-    entry skip-worktree. Pure index manipulation -- no working-tree writes by
-    git itself. Idempotent.
-
-    Recipe:
-      1. `git read-tree HEAD` (no `-u`) -- populate the worktree's index from
-         HEAD. Newly-created `--no-checkout` stubs do not always have an index
-         file; without one, `update-index --skip-worktree --stdin` has nothing
-         to mark and `git status` falls back to a HEAD-vs-disk comparison.
-      2. Set `core.sparseCheckout=true` and `core.sparseCheckoutCone=false`.
-      3. Write an empty pattern file to `info/sparse-checkout`.
-      4. Mark every index entry skip-worktree via `update-index --skip-worktree --stdin`.
-
-    Why not `git sparse-checkout init`: that command runs `read-tree` with
-    cone-mode defaults internally, materialising root-level files on disk
-    before any cone-disable can take effect. Verified: git sparse-checkout
-    init+set+disable left root files on disk.
-    Read-tree WITHOUT `-u` is safe -- it only updates the index, not disk.
-    """
-    rc, gitdir_out, err = git('rev-parse', '--git-dir', cwd=stub_path)
-    if rc != 0:
-        print(f'  quiet_stub: rev-parse --git-dir failed: {err}')
-        return False
-    gitdir = gitdir_out.strip()
-    if not os.path.isabs(gitdir):
-        gitdir = os.path.join(stub_path, gitdir)
-
-    # 1. Populate the index from HEAD without touching disk.
-    rc, _, err = git('read-tree', 'HEAD', cwd=stub_path)
-    if rc != 0:
-        print(f'  quiet_stub: read-tree HEAD failed: {err}')
-        return False
-
-    # 2. Sparse-checkout config flags.
-    if git('config', 'core.sparseCheckout', 'true', cwd=stub_path)[0] != 0:
-        print('  quiet_stub: failed to set core.sparseCheckout')
-        return False
-    if git('config', 'core.sparseCheckoutCone', 'false', cwd=stub_path)[0] != 0:
-        print('  quiet_stub: failed to set core.sparseCheckoutCone')
-        return False
-
-    # 3. Empty pattern file (no patterns = no files match = all skip-worktree).
-    info_dir = os.path.join(gitdir, 'info')
-    os.makedirs(info_dir, exist_ok=True)
-    sparse_file = os.path.join(info_dir, 'sparse-checkout')
-    tmp = sparse_file + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as fh:
-        fh.write('')
-    os.replace(tmp, sparse_file)
-
-    # 4. Mark every index entry skip-worktree.
-    # Use -z (NUL-separated, binary) for both ls-files and update-index --stdin.
-    # Windows text-mode subprocess pipes convert \n to \r\n in stdin, which
-    # corrupts the paths git sees and triggers "Ignoring path" warnings. The
-    # bash pipe (`ls-files | update-index --stdin`) works because it stays
-    # binary; subprocess.run(input=text_str, text=True) does not.
-    ls_proc = subprocess.run(
-        ['git', '-C', stub_path, 'ls-files', '-z'],
-        capture_output=True, check=False,
-    )
-    if ls_proc.returncode != 0:
-        print(f'  quiet_stub: ls-files -z failed: {ls_proc.stderr.decode(errors="replace")}')
-        return False
-    if not ls_proc.stdout:
-        # Empty HEAD tree: nothing to skip. Status is already clean.
-        return True
-
-    proc = subprocess.run(
-        ['git', '-C', stub_path, 'update-index', '--skip-worktree', '-z', '--stdin'],
-        input=ls_proc.stdout, capture_output=True, check=False,
-    )
-    if proc.returncode != 0:
-        print(f'  quiet_stub: update-index --skip-worktree failed: {proc.stderr.decode(errors="replace")}')
-        return False
-    if proc.stderr:
-        msg = proc.stderr.decode(errors='replace').strip()
-        if msg:
-            print(f'  quiet_stub: update-index reported: {msg}')
-            return False
-
-    # Exclude untracked files from the cleanliness check -- the sentinel and
-    # any other allowed dotfiles are legitimately on-disk-but-untracked.
-    rc, status_out, _ = git('status', '--porcelain', '--untracked-files=no', cwd=stub_path)
-    if rc == 0 and status_out.strip():
-        print(f'  quiet_stub: status not clean after quiet: {len(status_out.splitlines())} tracked entries remain')
-        return False
-    return True
-
-
-def stub_is_quieted(stub_path):
-    """True if a stub has been quieted by quiet_stub. Checks the per-worktree
-    artifacts -- not just `git config --get`, which would return values
-    inherited from the main repo's config and misclassify every untouched
-    worktree as already-quieted.
-
-    Two artifacts must both be present in the worktree's gitdir:
-      - info/sparse-checkout (any size, even empty)
-      - index with at least one skip-worktree-flagged entry
-    """
-    rc, gitdir_out, _ = git('rev-parse', '--git-dir', cwd=stub_path)
-    if rc != 0:
-        return False
-    gitdir = gitdir_out.strip()
-    if not os.path.isabs(gitdir):
-        gitdir = os.path.join(stub_path, gitdir)
-
-    if not os.path.isfile(os.path.join(gitdir, 'info', 'sparse-checkout')):
-        return False
-    if not os.path.isfile(os.path.join(gitdir, 'index')):
-        return False
-
-    # `ls-files -v` prints S<path> for skip-worktree entries, H<path> for
-    # normal. We just need to know one S exists.
-    rc, ls_out, _ = git('ls-files', '-v', cwd=stub_path)
-    if rc != 0:
-        return False
-    for line in ls_out.splitlines():
-        if line.startswith('S '):
-            return True
-    return False
 
 
 # ----- Main shrink flow ------------------------------------------------------
@@ -1021,7 +804,7 @@ def shrink_one(name, apply_mode=False, branch_mode='merged'):
 
     # Quiet the stub: skip-worktree every index entry so `git status` doesn't
     # report HEAD as a wall of staged deletions. See quiet_stub() docstring.
-    if not quiet_stub(target_path):
+    if not quiet_stub(target_path, repo_root=REPO_ROOT):
         manifest['failure_reason'] = 'quiet_stub failed'
         append_phase(manifest, manifest_path, 'failed', reason='quiet_stub failed')
         print('  FAILED at quiet-stub')
@@ -1141,12 +924,12 @@ def resume(manifest_path):
     # Quiet the stub (idempotent; safe to call on already-quieted stubs).
     # Must run AFTER any stub-recreate above so we operate on a valid gitfile.
     if 'stub-quieted' not in completed and 'stub-created' in completed:
-        if stub_is_quieted(target_path):
+        if stub_is_quieted(target_path, repo_root=REPO_ROOT):
             append_phase(manifest, manifest_path, 'stub-quieted', recovered=True)
             completed.add('stub-quieted')
             print('  recovered stub-quieted state from disk.')
         else:
-            if not quiet_stub(target_path):
+            if not quiet_stub(target_path, repo_root=REPO_ROOT):
                 manifest['failure_reason'] = 'quiet_stub failed'
                 write_manifest(manifest_path, manifest)
                 print('  FAILED at quiet-stub')

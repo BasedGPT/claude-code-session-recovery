@@ -51,7 +51,6 @@ Usage:
     python tools/sessions/recover_vscode_sessions.py --workspace-dir /path/to/workspaceStorage
 """
 import argparse
-import glob
 import json
 import os
 import pathlib
@@ -61,6 +60,10 @@ import sqlite3
 import subprocess
 import sys
 import time
+
+_TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _TOOLS_DIR)
+from transcript_files import build_transcript_index, cache_metadata  # noqa: E402
 
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -192,83 +195,6 @@ def _cached_uuids(dbs):
                 if _UUID_RE.match(sid):
                     uuids.add(sid)
     return uuids
-
-
-# ---------------------------------------------------------------------------
-# JSONL scanning
-# ---------------------------------------------------------------------------
-
-def _build_disk_index(projects_dir):
-    """Return {session_uuid: absolute_jsonl_path} for every *.jsonl found."""
-    index = {}
-    if not os.path.isdir(projects_dir):
-        return index
-    for slug in sorted(os.listdir(projects_dir)):
-        slug_dir = os.path.join(projects_dir, slug)
-        if not os.path.isdir(slug_dir):
-            continue
-        for f in glob.glob(os.path.join(slug_dir, "*.jsonl")):
-            sid = os.path.splitext(os.path.basename(f))[0]
-            if _UUID_RE.match(sid):
-                index[sid] = f
-    return index
-
-
-def _read_session_meta(jsonl_path):
-    """Read a JSONL file to extract title, created_ms, and last_message_ms.
-
-    Reads the full file so the title is found even on large sessions where
-    the extension's 64 KB head/tail buffer would miss it.
-
-    last_message_ms is the timestamp of the last JSONL entry that carries one.
-    Trailer records appended by the extension (ai-title, last-prompt) carry no
-    timestamp, so they don't advance this value -- it reflects the last real
-    conversation event regardless of how many title-rewrites have since bumped
-    the file's mtime.
-    """
-    title = None
-    created_ms = None
-    last_message_ms = None
-    try:
-        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-
-                entry_type = obj.get("type", "")
-                if entry_type == "custom-title" and obj.get("customTitle") and not title:
-                    title = str(obj["customTitle"])
-                elif entry_type == "ai-title" and obj.get("aiTitle") and title is None:
-                    title = str(obj["aiTitle"])
-
-                ts = obj.get("timestamp")
-                ts_ms = None
-                if isinstance(ts, (int, float)) and ts > 0:
-                    ts_ms = int(ts)
-                elif isinstance(ts, str):
-                    try:
-                        import datetime
-                        ts_clean = ts.replace("Z", "+00:00")
-                        dt = datetime.datetime.fromisoformat(ts_clean)
-                        ts_ms = int(dt.timestamp() * 1000)
-                    except (ValueError, OverflowError):
-                        pass
-
-                if ts_ms is not None:
-                    if created_ms is None:
-                        created_ms = ts_ms
-                    last_message_ms = ts_ms  # keep advancing -- last wins
-
-    except OSError:
-        pass
-    return title, created_ms, last_message_ms
 
 
 def _make_cache_entry(sid, title, created_ms, last_message_ms, now_ms):
@@ -461,7 +387,9 @@ def main():
 
     # --- Scan disk for all JSONL session files ---
     print("Scanning transcript files on disk...")
-    disk_index = _build_disk_index(projects_dir)
+    disk_index = build_transcript_index(
+        projects_dir, lambda session_id: bool(_UUID_RE.match(session_id))
+    )
     print(f"Found {len(disk_index)} transcript file(s) on disk.")
     print()
 
@@ -477,7 +405,7 @@ def main():
     new_entries = []
     for sid in missing_uuids:
         jsonl_path = disk_index[sid]
-        title, created_ms, last_message_ms = _read_session_meta(jsonl_path)
+        title, created_ms, last_message_ms = cache_metadata(jsonl_path)
         entry = _make_cache_entry(sid, title, created_ms, last_message_ms, now_ms)
         new_entries.append(entry)
         ts_display = ""

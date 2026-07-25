@@ -34,16 +34,18 @@ Usage (as a SessionStart hook in .claude/settings.json):
 import os
 import sys
 
-MARKER = ".shrink-when-safe"
+from worktree_lifecycle import MARKER_READY, ready_marker_path, remove_ready_marker
+
+
+MARKER = MARKER_READY
 
 
 def main():
     cwd = os.getcwd()
-    marker_path = os.path.join(cwd, MARKER)
-    if not os.path.isfile(marker_path):
-        return 0
+    marker_path = ready_marker_path(cwd)
     try:
-        os.remove(marker_path)
+        if not remove_ready_marker(cwd):
+            return 0
         sys.stderr.write(
             "[worktree-resume-rule] Removed {} -- this session opened a worktree "
             "that was queued for shrink. Marker cleared; the shrink processor will "

@@ -45,7 +45,8 @@ import sys
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from diagnose import build_snapshot, _find_meta_dirs, _build_jsonl_index, _slug_encode
+    from session_state import build_snapshot, find_metadata_directories, slug_encode
+    from transcript_files import build_transcript_index
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/audit_broken_sessions.py")
@@ -78,7 +79,7 @@ def _classify(meta, jsonl_index):
     if cli not in jsonl_index:
         return "cli_but_no_jsonl", info
 
-    expected_slug = _slug_encode(info["cwd"])
+    expected_slug = slug_encode(info["cwd"])
     actual_slug = os.path.basename(os.path.dirname(jsonl_index[cli]))
     info["expected_slug"] = expected_slug
 
@@ -100,9 +101,9 @@ def _audit(appdata_claude_dir, projects_dir):
         "cli_but_no_jsonl":       [],
         "healthy":                [],
     }
-    jsonl_index = _build_jsonl_index(projects_dir)
+    jsonl_index = build_transcript_index(projects_dir)
 
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
+    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         for fname in sorted(os.listdir(meta_dir)):
             if not (fname.startswith("local_") and fname.endswith(".json")):
                 continue

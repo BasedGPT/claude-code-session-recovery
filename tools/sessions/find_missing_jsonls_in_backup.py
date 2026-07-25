@@ -43,7 +43,8 @@ import sys
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from diagnose import build_snapshot, _find_meta_dirs, _build_jsonl_index
+    from session_state import build_snapshot, find_metadata_directories
+    from transcript_files import build_transcript_index
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/find_missing_jsonls_in_backup.py")
@@ -70,30 +71,11 @@ BACKUP_ROOTS = [
 ]
 
 
-def _verify_jsonl(path, expected_sid):
-    """Return True if the first non-empty record in the JSONL has sessionId == expected_sid."""
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except (ValueError, TypeError):
-                    continue
-                sid = rec.get("sessionId") or ""
-                return isinstance(sid, str) and sid == expected_sid
-    except OSError:
-        pass
-    return False
-
-
 def _find_missing(appdata_claude_dir, projects_dir):
     """Return [(meta_file, cli_sid, title, created_at)] for sessions with no live JSONL."""
-    jsonl_index = _build_jsonl_index(projects_dir)
+    jsonl_index = build_transcript_index(projects_dir)
     out = []
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
+    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         for fname in sorted(os.listdir(meta_dir)):
             if not (fname.startswith("local_") and fname.endswith(".json")):
                 continue

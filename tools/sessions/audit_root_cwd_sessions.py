@@ -35,7 +35,7 @@ import sys
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from diagnose import build_snapshot, _find_meta_dirs
+    from session_state import build_snapshot, find_metadata_directories
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/audit_root_cwd_sessions.py")
@@ -81,7 +81,7 @@ def main():
 
     rows = []
     parse_errors = []
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
+    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         for fname in sorted(os.listdir(meta_dir)):
             if not (fname.startswith("local_") and fname.endswith(".json")):
                 continue

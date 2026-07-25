@@ -64,7 +64,10 @@ if hasattr(sys.stderr, "reconfigure"):
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from diagnose import build_snapshot, make_diagnosis_id, _find_meta_dirs
+    from session_state import find_metadata_directories
+    from mutator_safety import (
+        current_snapshot_and_diagnosis_id, diagnosis_mode, resolve_state_paths,
+    )
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/recover_deleted_branches_worktrees.py")
@@ -191,7 +194,7 @@ def _gather_broken_sessions(appdata_claude_dir):
     """Return one dict per metadata entry whose cwd contains 'worktrees' and
     does not exist on disk."""
     rows = []
-    for _acct, _org, meta_dir in _find_meta_dirs(appdata_claude_dir):
+    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         import glob as _glob
         for p in sorted(_glob.glob(os.path.join(meta_dir, "local_*.json"))):
             try:
@@ -278,12 +281,14 @@ def main():
     args = ap.parse_args()
 
     # --- Gate 3: diagnosis-token check ---
-    force_mode = args.force_diagnosis_id == "audit-only"
-    if not args.diagnosis_id and not force_mode:
+    force_mode, invocation_error = diagnosis_mode(
+        args.diagnosis_id, args.force_diagnosis_id, args.apply,
+    )
+    if invocation_error == "missing":
         print("ERROR: --diagnosis-id required.")
         print("Run: python tools/diagnose.py")
         sys.exit(2)
-    if args.apply and force_mode:
+    if invocation_error == "force_apply":
         print("ERROR: --apply cannot be combined with --force-with-diagnosis-id=audit-only.")
         sys.exit(2)
 
@@ -292,20 +297,15 @@ def main():
         REPO_ROOT = os.path.abspath(args.repo_root)
 
     # Resolve directories
-    if args.state:
-        state_abs = os.path.abspath(args.state)
-        appdata_claude_dir = os.path.join(state_abs, "appdata", "Claude")
-        projects_dir = os.path.join(state_abs, "projects")
-    else:
-        appdata_claude_dir = APPDATA_CLAUDE_DIR
-        projects_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+    appdata_claude_dir, projects_dir = resolve_state_paths(
+        args.state, APPDATA_CLAUDE_DIR,
+        os.path.join(os.path.expanduser("~"), ".claude", "projects"),
+    )
 
     # Compute current snapshot and diagnosis ID
-    snapshot = build_snapshot(
-        appdata_claude_dir, projects_dir,
-        fixture_mode=(args.state is not None),
+    snapshot, current_id = current_snapshot_and_diagnosis_id(
+        appdata_claude_dir, projects_dir, fixture_mode=(args.state is not None),
     )
-    current_id = make_diagnosis_id(snapshot)
 
     if not force_mode and current_id != args.diagnosis_id:
         print(

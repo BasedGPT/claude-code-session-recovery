@@ -5,7 +5,8 @@ For each fixture:
   1. Runs diagnose.py --state against the fixture state and diffs against golden/diagnose.json
      and golden/diagnose.txt.
   2. If golden/dry-run.txt exists: copies state to a temp dir, runs the mutator in dry-run
-     mode, diffs stdout against the golden file.
+     mode, asserts the copy is unchanged, checks its exit-status contract, and diffs stdout
+     against the golden file.
   3. If golden/post-mutation.json exists: copies state to a fresh temp dir, runs the mutator
      with --apply, runs diagnose.py against the mutated state, diffs against the golden file.
   4. Asserts state/ is byte-identical before and after all tests (originals never touched).
@@ -14,31 +15,19 @@ Usage:
     python tests/run_fixture_tests.py
     python tests/run_fixture_tests.py fixtures/01-healthy-baseline  # single fixture
 """
-import hashlib
 import json
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 
 # Resolve paths relative to the repo root (this file lives in tests/)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES_DIR = os.path.join(REPO_ROOT, "fixtures")
-DIAGNOSE = os.path.join(REPO_ROOT, "tools", "diagnose.py")
 
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
 
-def _dir_fingerprint(path):
-    """SHA256 of all file contents under path, sorted by relative path."""
-    h = hashlib.sha256()
-    for dirpath, _, filenames in sorted(os.walk(path)):
-        for fname in sorted(filenames):
-            fpath = os.path.join(dirpath, fname)
-            rel = os.path.relpath(fpath, path)
-            h.update(rel.encode("utf-8"))
-            with open(fpath, "rb") as f:
-                h.update(f.read())
-    return h.hexdigest()
+from fixture_scenarios import FixtureScenario, read_exit_contract, state_fingerprint
 
 
 def _show_text_diff(label, expected, actual):
@@ -56,13 +45,15 @@ def _show_text_diff(label, expected, actual):
 
 
 def run_fixture(fixture_dir):
-    name = os.path.basename(fixture_dir)
-    state_dir = os.path.join(fixture_dir, "state")
-    golden_dir = os.path.join(fixture_dir, "golden")
-    golden_json = os.path.join(golden_dir, "diagnose.json")
-    golden_txt = os.path.join(golden_dir, "diagnose.txt")
-    dry_run_golden = os.path.join(golden_dir, "dry-run.txt")
-    post_mutation_golden = os.path.join(golden_dir, "post-mutation.json")
+    scenario = FixtureScenario(fixture_dir, REPO_ROOT)
+    paths = scenario.paths
+    name = paths.name
+    state_dir = paths.state_dir
+    golden_json = paths.diagnose_json
+    golden_txt = paths.diagnose_text
+    dry_run_golden = paths.dry_run_text
+    dry_run_exit = paths.dry_run_exit
+    post_mutation_golden = paths.post_mutation_json
 
     if not os.path.isfile(golden_json):
         print("  SKIP {} (no golden/diagnose.json)".format(name))
@@ -71,17 +62,11 @@ def run_fixture(fixture_dir):
     print("  Testing {}...".format(name))
 
     # Snapshot state before any test
-    state_before = _dir_fingerprint(state_dir)
+    state_before = state_fingerprint(state_dir)
 
     # 1. diagnose.py --json
-    result = subprocess.run(
-        [sys.executable, DIAGNOSE, "--state", state_dir, "--json"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=True,
-    )
-    actual_json = json.loads(result.stdout)
+    diagnosis = scenario.diagnose_json()
+    actual_json = diagnosis.payload
     with open(golden_json, encoding="utf-8") as f:
         expected_json = json.load(f)
 
@@ -95,13 +80,7 @@ def run_fixture(fixture_dir):
 
     # 1b. diagnose.py human text
     if os.path.isfile(golden_txt):
-        result_txt = subprocess.run(
-            [sys.executable, DIAGNOSE, "--state", state_dir],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=True,
-        )
+        result_txt = scenario.diagnose_text()
         with open(golden_txt, encoding="utf-8") as f:
             expected_txt = f.read()
 
@@ -113,79 +92,68 @@ def run_fixture(fixture_dir):
 
     # 2-3. Mutator dry-run test
     if os.path.isfile(dry_run_golden):
-        mutator_rel = None
-        for problem in expected_json.get("matched_problems", []):
-            if problem.get("mutator"):
-                mutator_rel = problem["mutator"]
-                break
+        if not os.path.isfile(dry_run_exit):
+            print("    FAIL: missing dry-run.exit contract")
+            return False
+        try:
+            expected_dry_exit = read_exit_contract(dry_run_exit)
+        except ValueError as error:
+            print("    FAIL: invalid dry-run.exit contract: {}".format(error))
+            return False
 
-        if not mutator_rel:
+        mutator_path = scenario.find_mutator(expected_json)
+        if not mutator_path:
             print("    SKIP mutator tests (no mutator in golden/diagnose.json)")
         else:
-            mutator_path = os.path.join(REPO_ROOT, os.path.normpath(mutator_rel))
             diagnosis_id = expected_json["diagnosis_id"]
 
-            tmp1 = tempfile.mkdtemp(prefix="fx_dry_")
-            try:
-                shutil.copytree(state_dir, os.path.join(tmp1, "state"))
-                tmp_state1 = os.path.join(tmp1, "state")
+            r_dry = scenario.run_dry_mutator(
+                mutator_path, diagnosis_id, temp_prefix="fx_dry_"
+            )
+            with open(dry_run_golden, encoding="utf-8") as f:
+                expected_dry = f.read()
 
-                r_dry = subprocess.run(
-                    [sys.executable, mutator_path,
-                     "--state", tmp_state1,
-                     "--diagnosis-id", diagnosis_id],
-                    capture_output=True, text=True, encoding="utf-8",
+            if not r_dry.state_unchanged:
+                print("    FAIL: dry run modified its isolated state copy")
+                return False
+
+            if r_dry.returncode != expected_dry_exit:
+                print(
+                    "    FAIL: dry-run exit mismatch: expected {}, got {}".format(
+                        expected_dry_exit, r_dry.returncode
+                    )
                 )
-                with open(dry_run_golden, encoding="utf-8") as f:
-                    expected_dry = f.read()
+                if r_dry.stderr:
+                    print("    stderr: {}".format(r_dry.stderr[:300]))
+                return False
 
-                if r_dry.stdout != expected_dry:
-                    _show_text_diff("dry-run.txt", expected_dry, r_dry.stdout)
-                    if r_dry.stderr:
-                        print("    stderr: {}".format(r_dry.stderr[:300]))
-                    return False
+            if r_dry.stdout != expected_dry:
+                _show_text_diff("dry-run.txt", expected_dry, r_dry.stdout)
+                if r_dry.stderr:
+                    print("    stderr: {}".format(r_dry.stderr[:300]))
+                return False
 
-                print("    dry-run.txt OK")
-            finally:
-                shutil.rmtree(tmp1, ignore_errors=True)
+            print("    dry-run.txt OK")
 
             # 4-6. Apply + post-mutation test
             if os.path.isfile(post_mutation_golden):
-                tmp2 = tempfile.mkdtemp(prefix="fx_apply_")
-                try:
-                    shutil.copytree(state_dir, os.path.join(tmp2, "state"))
-                    tmp_state2 = os.path.join(tmp2, "state")
+                applied = scenario.apply_and_diagnose(
+                    mutator_path, diagnosis_id, temp_prefix="fx_apply_"
+                )
+                actual_post = applied.post_diagnosis.payload
+                with open(post_mutation_golden, encoding="utf-8") as f:
+                    expected_post = json.load(f)
 
-                    subprocess.run(
-                        [sys.executable, mutator_path,
-                         "--state", tmp_state2,
-                         "--diagnosis-id", diagnosis_id, "--apply"],
-                        capture_output=True, text=True, encoding="utf-8",
-                        check=True,
-                    )
+                if actual_post != expected_post:
+                    print("    FAIL: post-mutation.json mismatch")
+                    print("    Expected: {}".format(json.dumps(expected_post, indent=2)))
+                    print("    Got:      {}".format(json.dumps(actual_post, indent=2)))
+                    return False
 
-                    r_post = subprocess.run(
-                        [sys.executable, DIAGNOSE,
-                         "--state", tmp_state2, "--json"],
-                        capture_output=True, text=True, encoding="utf-8",
-                        check=True,
-                    )
-                    actual_post = json.loads(r_post.stdout)
-                    with open(post_mutation_golden, encoding="utf-8") as f:
-                        expected_post = json.load(f)
-
-                    if actual_post != expected_post:
-                        print("    FAIL: post-mutation.json mismatch")
-                        print("    Expected: {}".format(json.dumps(expected_post, indent=2)))
-                        print("    Got:      {}".format(json.dumps(actual_post, indent=2)))
-                        return False
-
-                    print("    post-mutation.json OK")
-                finally:
-                    shutil.rmtree(tmp2, ignore_errors=True)
+                print("    post-mutation.json OK")
 
     # Assert original state/ unchanged throughout
-    state_after = _dir_fingerprint(state_dir)
+    state_after = state_fingerprint(state_dir)
     if state_before != state_after:
         print("    FAIL: state/ was modified during test")
         return False

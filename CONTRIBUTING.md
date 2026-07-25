@@ -14,7 +14,8 @@ Open an issue and include:
 This repo is maintained on a best-effort basis. PRs are welcome for:
 
 - New fixtures covering broken states not currently in the fixture suite
-- New `troubleshooting.json` rows (must include a matching fixture)
+- New `troubleshooting.json` rows (must include a matching fixture, a matching
+  `troubleshooting.md` section, and a documented `details` anchor)
 - Bug fixes in existing tools
 - Docs improvements
 

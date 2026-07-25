@@ -92,6 +92,20 @@ Run `python tools/diagnose.py` first — it reads this table, probes your state,
 
 ---
 
+### truncated-jsonl
+
+**Symptom:** A session opens, but its conversation history looks shorter than expected.
+
+**Root cause:** The metadata's `completedTurns` value is higher than the number of assistant records found in the linked JSONL transcript. The link may be valid while the transcript itself is truncated or rolled back.
+
+**Fix:** `python tools/diagnose.py` counts these sessions. Check cloud-sync version history, VSS snapshots, or backup copies for a longer JSONL with the same session UUID. Metadata repair cannot recreate missing transcript records.
+
+**Safety:** No automatic mutation is available. Diagnose is read-only and safe to run anytime. Preserve the surviving transcript before comparing or restoring another copy.
+
+**Details:** [docs/session-recovery.md#truncated-jsonl](docs/session-recovery.md#truncated-jsonl)
+
+---
+
 ### orphan-jsonl-no-metadata
 
 **Symptom:** Sessions are absent from the session list even though their transcript files exist on disk.

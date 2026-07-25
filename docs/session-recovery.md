@@ -173,6 +173,30 @@ PROBLEM FOUND: One project shows two sets of sessions in the session list
 
 ---
 
+<a id="truncated-jsonl"></a>
+
+## Session opens but its conversation history is shorter than expected
+
+**What you see.** A session appears in the session list and opens normally, but the conversation stops earlier than you remember. The transcript file exists on disk, yet the visible conversation has fewer assistant turns than the metadata says were completed.
+
+**Why it happens (plain).** Desktop's metadata records how many turns the session completed. The JSONL transcript is the actual conversation. If the transcript has fewer assistant records than `completedTurns`, the file may have been truncated or rolled back by a sync, backup, or filesystem failure. The metadata link can still be perfectly valid, so repairing metadata will not recreate the missing records.
+
+**What `diagnose.py` reports:**
+
+```
+Truncated    : 1 session(s) have fewer messages than completedTurns records (history appears cut off)
+```
+
+`diagnose.py` compares the assistant-record count in each local JSONL with the metadata's `completedTurns` value. It is read-only and does not modify either file.
+
+**Recovery.** No automatic repair is available. Check cloud-sync version history, scheduled backups, VSS snapshots on Windows, or another copy of the project transcripts for a longer version of the same JSONL. Compare copies by session UUID and size before restoring anything. If a longer transcript is recovered, run `diagnose.py` again and follow the exact command it prints for the remaining state.
+
+**Safety.** Do not overwrite the surviving transcript until a backup copy exists. Quit Claude Desktop fully before restoring a JSONL, because the app may hold session state in memory.
+
+**Recovery time:** Depends on whether a longer backup or version-history copy exists.
+
+---
+
 <a id="orphan-jsonl-no-metadata"></a>
 ## Sessions missing from Desktop session list
 

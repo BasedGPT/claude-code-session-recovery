@@ -36,6 +36,18 @@ python tools/groupings/list_groupings.py --quiet
 
 Claude sessions have two parts: Desktop metadata (`%APPDATA%\Claude\claude-code-sessions\...\local_*.json`) and CLI transcripts (`~\.claude\projects\<slug>\*.jsonl`). The `cliSessionId` field in the metadata file links them. Most session-history bugs are a broken or missing link. A diagnosis token is a deterministic 8-hex SHA-256 hash of the structural state snapshot — mutators require it and refuse to run if the state has changed since it was issued.
 
+Shared implementation modules keep that behaviour consistent:
+
+| Module | Responsibility |
+|---|---|
+| `tools/session_state.py` | Read-only state discovery, snapshot construction, matching, and diagnosis tokens |
+| `tools/transcript_files.py` | Transcript discovery and JSONL interpretation |
+| `tools/mutator_safety.py` | Policy-free mutation mechanics such as token checks and verified backups |
+| `tools/worktrees/worktree_lifecycle.py` | Worktree marker, sentinel, and quiet-stub mechanics |
+| `tests/fixture_scenarios.py` | Isolated fixture execution shared by verification and golden regeneration |
+
+Executable scripts remain the command-line and reporting adapters. Keep user-facing wording, exit codes, paths, and safety policy local to those scripts.
+
 ---
 
 ## 3. Safety boundaries
@@ -64,19 +76,19 @@ Claude sessions have two parts: Desktop metadata (`%APPDATA%\Claude\claude-code-
 | Desktop session metadata | `%APPDATA%\Claude\claude-code-sessions\<account-uuid>\<org-uuid>\local_*.json` |
 | CLI transcripts | `%USERPROFILE%\.claude\projects\<slug>\*.jsonl` |
 | Desktop install | `%LOCALAPPDATA%\AnthropicClaude\app-<version>\` |
-| Backup dir (created by mutators) | `.\repair-backup\` (relative to where the script runs) |
+| Backup and staging dirs | Script-specific directories documented by each mutator's dry-run output |
 | Fixtures | `fixtures/<NN>-<name>/state/` |
-| Golden outputs | `fixtures/<NN>-<name>/golden/` |
+| Golden outputs and exit contracts | `fixtures/<NN>-<name>/golden/` |
 | Routing table | `troubleshooting.json` (source of truth), `troubleshooting.md` (human copy) |
 
 ---
 
 ## 6. Git workflow conventions
 
-- Commits are signed. Releases are tagged (`v1.0.0`, `v1.0.1`, ...).
+- Releases are tagged (`v1.0.0`, `v1.0.1`, ...).
 - Each release tag carries SHA256 hashes of all tool files in the release notes.
 - `main` is the stable branch. No force-push to `main`.
-- New mutators require a matching fixture and must pass the five mutator gates (see `docs/architecture.md`).
+- New mutators require a matching fixture and must pass the five mutator gates (see `docs/architecture.md`), including the dry-run exit and unchanged-state contracts.
 
 ---
 

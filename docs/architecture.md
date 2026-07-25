@@ -25,6 +25,30 @@ If `cliSessionId` is missing or null, Desktop renders the session in the session
 
 ---
 
+## Implementation boundaries
+
+The code keeps command-line policy separate from reusable implementation:
+
+| Module | Interface and responsibility |
+|---|---|
+| `tools/session_state.py` | Read-only metadata discovery, structural snapshot construction, troubleshooting matching, and diagnosis-token generation |
+| `tools/transcript_files.py` | Transcript discovery and caller-selectable JSONL interpretation |
+| `tools/mutator_safety.py` | Policy-free mutation mechanics: invocation checks, fixture/live path resolution, fresh diagnosis, verified backup publication, and file writes |
+| `tools/worktrees/worktree_lifecycle.py` | Worktree marker claims, sentinel content, and quiet-stub implementation |
+| `tests/fixture_scenarios.py` | Isolated scenario execution shared by fixture verification and golden regeneration |
+
+The executable scripts are adapters. They retain command-line arguments,
+human-facing output, exit codes, destinations, and decisions about which
+repair applies. This seam gives the shared modules depth without centralising
+policy. It also improves locality: transcript interpretation changes live in
+one module, while the command that presents the result stays beside its
+user-facing implementation.
+
+The PowerShell worktree inspector does not import Python. It mirrors the
+marker and sentinel literals required for read-only inspection.
+
+---
+
 ## Slug encoding
 
 Claude Code derives a project slug from the `cwd` path string at session start. Path separators, colons, and other punctuation become dashes:
@@ -33,14 +57,14 @@ Claude Code derives a project slug from the `cwd` path string at session start. 
 C:\Users\You\Projects\MyApp  →  C--Users-You-Projects-MyApp
 ```
 
-The encoding in `diagnose.py`:
+The encoding in `session_state.py`:
 
 ```python
-def _slug_encode(cwd):
-    out = cwd
-    for ch in (":", "\\", "/", ".", " "):
-        out = out.replace(ch, "-")
-    return out
+def slug_encode(cwd):
+    encoded = cwd
+    for character in (":", "\\", "/", ".", " "):
+        encoded = encoded.replace(character, "-")
+    return encoded
 ```
 
 The slug is derived once — from the literal string Desktop was given at session start — and never updated. Two common failure modes follow directly from this:
@@ -142,15 +166,21 @@ Worktree sessions also include `branch`, `worktreePath`, `worktreeName`, and `so
 
 ## Mutator gates
 
-Every mutating script must pass five gates before it can be merged or run.
+Every diagnosis-routed session mutator must pass five gates before it can be
+merged or run. Worktree lifecycle mutations use the separate gates documented
+in [worktree-lifecycle.md](worktree-lifecycle.md).
 
-1. **Matching fixture.** A directory under `fixtures/<NN>-<name>/state/` reproduces the broken state the mutator targets, plus a `golden/` directory holding the expected `diagnose.py` output, dry-run output, and post-mutation snapshot. Enforced at contribution time — a mutator without a fixture will not be merged.
+1. **Matching fixture.** A directory under `fixtures/<NN>-<name>/state/` reproduces the broken state the mutator targets. Its `golden/` directory holds expected diagnosis output, dry-run output, the dry-run exit contract, and any post-mutation snapshot. The runner fingerprints the isolated state copy before and after dry-run execution. A changed copy, unexpected exit status, or output mismatch fails the fixture. Enforced at contribution time.
 2. **Diagnosis-token enforcement.** The script accepts `--diagnosis-id <hex>` and refuses to run if the token does not match a fresh diagnosis of the current state. A stale token — state changed between diagnosis and apply — causes refusal. Enforced at runtime.
-3. **Backup before mutation.** The script writes the original file to `.\repair-backup\<filename>` and verifies the write before touching the live file. A failed backup aborts the mutation. Enforced at runtime.
+3. **Backup before mutation.** A script that rewrites an existing file publishes a complete byte-verified backup to its documented backup directory before touching the live file. A failed copy or verification leaves no partial final-named backup and aborts the mutation. Enforced at runtime.
 4. **Schema probe.** If the state layout is not in the recognised fixture set, the script enters audit-only mode and emits no mutation command. Enforced at runtime.
-5. **Quit-Desktop precondition.** The script checks `claude.exe` in the process list and warns prominently if Desktop is running. Enforced at runtime.
+5. **Quit-Desktop precondition.** Every live-state mutation requires Desktop to be fully quit. Scripts with a reliable platform-specific process probe enforce this directly. Other scripts print the precondition and require the operator to verify it before apply.
 
-Gates 2–5 implement the safety contract enumerated in [SECURITY.md](../SECURITY.md). Gate 1 is the contribution contract enforced by CI — see [CONTRIBUTING.md](../CONTRIBUTING.md).
+Gates 2–4 use shared mechanics from `mutator_safety.py` where their existing
+behaviour permits it. Each executable retains its own policy and output.
+Gate 5 combines executable enforcement with an operator precondition. Gate 1
+is the contribution contract enforced by CI — see
+[CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ---
 
@@ -244,6 +274,13 @@ Fixtures use `--state <path>` to override the live AppData and projects director
     <slug>/
       <cli-session-id>.jsonl
       ...
+
+<fixture>/golden/
+  diagnose.json
+  diagnose.txt
+  dry-run.txt          # when the scenario has a mutator dry-run
+  dry-run.exit         # required alongside dry-run.txt
+  post-mutation.json   # when apply behaviour is covered
 ```
 
 `diagnose.py --state <path>` sets:
@@ -252,11 +289,18 @@ Fixtures use `--state <path>` to override the live AppData and projects director
 
 All UUIDs in fixtures are deterministic fakes of the form `fixture-NN-XXXX-0000-0000-000000000000`.
 
+`tests/fixture_scenarios.py` copies fixture state to a temporary directory for
+every mutator run. `tests/run_fixture_tests.py` compares the copied state's
+content-and-layout fingerprint before and after a dry run. Golden regeneration
+will not overwrite `dry-run.txt` when the exit contract changes or the copied
+state is modified. Exit contracts are measured from established behaviour and
+are not regenerated automatically.
+
 ---
 
 ## Diagnosis ID hash construction
 
-The `diagnosis_id` is an 8-hex SHA-256 of these snapshot fields only (the `structural_keys` tuple in `make_diagnosis_id`):
+The `diagnosis_id` is an 8-hex SHA-256 of these snapshot fields only (the `structural_keys` tuple in `session_state.make_diagnosis_id`):
 
 ```
 total_metadata_count, metadata_with_cli_count, metadata_missing_cli_count,

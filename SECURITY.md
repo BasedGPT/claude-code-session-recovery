@@ -21,19 +21,22 @@ Scripts in this repo read from these locations on your system:
 - `~/.config/Claude/claude-code-sessions/<account-uuid>/<org-uuid>/local_*.json`
 - `~/.claude/projects/<slug>/*.jsonl`
 
-Mutating scripts write to:
+Session mutators write to:
 
 - The specific metadata files they repair, in-place, after creating a backup
 - `~/.claude/projects/<slug>/<uuid>.jsonl` — `restore_from_vss.py` only (Windows); writes recovered transcripts as new files, never overwrites an existing JSONL
-- `.\repair-backup\` — a directory created next to where the script runs; originals go here before any mutation, and `restore_from_vss.py` writes a restore log here
+- Script-specific backup or staging directories. Each mutator prints the exact path and rollback command in its dry-run output.
 
-No other files are touched. Scripts never touch the registry and never access credentials or the clipboard.
+The worktree lifecycle tools have a separate write boundary documented in
+[`docs/worktree-lifecycle.md`](docs/worktree-lifecycle.md). Scripts never touch
+the registry and never access credentials or the clipboard.
 
 You must trust this repo's code before running it. The source is short and readable — start at `tools/diagnose.py`.
 
 ## Provenance
 
-Commits are GPG-signed. The signing key is published in the GitHub profile for [@BasedGPT](https://github.com/BasedGPT).
+Commits are not required to carry a GPG signature. Pin and verify the exact
+commit you intend to run.
 
 **Until a tagged release exists,** pin to a specific commit SHA and verify the working tree matches:
 
@@ -53,28 +56,28 @@ Compare against the hashes published in the release notes for the version you ar
 
 ## Safety contract
 
-Every mutating script enforces these conditions before touching anything:
+The toolkit applies these conditions before mutation:
 
 1. **Diagnosis token required.** Mutators will not run without a valid `--diagnosis-id` token produced by `diagnose.py` against the current state. A stale token (state has changed since the last diagnosis) causes a refusal.
-2. **Backup before mutation.** Every mutator writes the original file to `.\repair-backup\<filename>` before modifying it. The backup is written and verified before any mutation proceeds.
+2. **Backup before mutation.** A mutator that rewrites an existing file creates and verifies its documented backup before changing the live file. Mutators that create a new destination refuse unsafe overwrites.
 3. **Schema probe before action.** If the state layout is not in the recognised fixture set, scripts enter audit-only mode and will not print or execute any mutation command.
-4. **Quit Desktop first.** Scripts warn prominently if `claude.exe` appears in the process list. Running a mutator while Desktop is open risks Desktop overwriting your repair on its next memory flush.
+4. **Quit Desktop first.** This is an operator precondition for every live-state mutation. Scripts that can make a reliable platform-specific process check enforce it directly; other scripts print the precondition and rely on the operator to verify it. Running a mutator while Desktop is open risks Desktop overwriting the repair on its next memory flush.
 
 ## What scripts never do
 
 - No network calls of any kind
 - No telemetry or usage reporting
 - No auto-update
-- No writes outside the two state directories listed above and the local `.\repair-backup\` folder
+- No undocumented write destinations; every mutator prints its destination and rollback path before applying
 - No registry reads or writes
 - No clipboard access
-- No process spawning beyond `tasklist`, `claude --version` (version detection), and PowerShell + `vssadmin` (`restore_from_vss.py` only, for VSS enumeration)
+- Session tools spawn only their documented local helpers: `tasklist`, `claude --version` for version detection, and PowerShell plus `vssadmin` for `restore_from_vss.py`. Worktree tools invoke Git as documented in the lifecycle guide.
 
 ## Reproducibility
 
 Every diagnosis is deterministic: the same filesystem state produces the same diagnosis ID, every time. The diagnosis ID is a SHA-256 hash of the structural state snapshot — not a timestamp or a random value. Two runs against the same unchanged state will always produce the same ID.
 
-Every mutation is reversible from the backup: copy `.\repair-backup\<filename>` back to its original path. The rollback command is printed by every mutating script in its dry-run output before anything is written.
+Every rewrite of an existing file is reversible from the verified backup. The rollback command is printed by the mutating script in its dry-run output before anything is written.
 
 ## Reporting security issues
 

@@ -148,6 +148,27 @@ Healthy stubs are hidden by default. The inspector never mutates; it reports.
 
 ---
 
+## Shared lifecycle implementation
+
+`tools/worktrees/worktree_lifecycle.py` is the shared implementation used by
+the Python lifecycle tools. It owns:
+
+- Ready and in-progress marker names and atomic marker claims
+- Sentinel fields and rendering
+- Sparse-index configuration for quiet `--no-checkout` stubs
+- Stub creation and quietness checks
+
+`worktree_shrink.py` retains the shrink pipeline, quarantine policy, manifest,
+resume flow, and user-facing output. `backfill_recovery_stubs.py` retains its
+selection and reporting policy. Both call the shared module at the lifecycle
+seam instead of carrying separate implementations.
+
+`worktree_inspector.ps1` remains a standalone read-only adapter. It mirrors the
+marker and sentinel literals because invoking Python during inspection would
+add a runtime dependency and weaken the read-only boundary.
+
+---
+
 ## Stub status quietness
 
 `git worktree add --no-checkout` creates a worktree whose index is populated from HEAD but whose working tree is empty. Without further action, `git status` inside the stub reports every tracked file as a staged deletion.

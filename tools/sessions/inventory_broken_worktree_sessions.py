@@ -32,17 +32,14 @@ import sys
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import build_snapshot, find_metadata_directories
+    from session_state import build_snapshot, default_claude_paths, find_metadata_directories
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/inventory_broken_worktree_sessions.py")
     sys.exit(1)
 
 # --- Configuration ---
-APPDATA_CLAUDE_DIR = os.path.join(
-    os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
-)
-PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+APPDATA_CLAUDE_DIR, PROJECTS_DIR = default_claude_paths()
 
 
 def main():

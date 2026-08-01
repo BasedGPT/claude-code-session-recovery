@@ -61,6 +61,19 @@ $PreservedDirs = @(
     '.playwright-mcp','.tmp_audit','.transcript-index','.dxt-sources','.obsidian','.agents'
 )
 
+# Resolve the repository's default branch at runtime. The public repository
+# uses main, while older clones may still use master; origin/HEAD is the most
+# authoritative ref when it is available.
+$BaseRef = (& git -C $RepoRoot symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>$null |
+    Select-Object -First 1)
+if (-not $BaseRef) {
+    foreach ($candidate in @('main', 'master')) {
+        & git -C $RepoRoot rev-parse --verify --quiet $candidate 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $BaseRef = $candidate; break }
+    }
+}
+if (-not $BaseRef) { $BaseRef = 'main' }
+
 # -------- Queue mode (short-circuit) --------------------------------------
 if ($Queue) {
     $wtRoot = Join-Path $RepoRoot '.claude\worktrees'
@@ -96,6 +109,7 @@ if ($Queue) {
 Write-Host "Worktree Inspector"
 Write-Host ("  Repo:    " + $RepoRoot)
 Write-Host ("  Output:  " + $outFile)
+Write-Host ("  Base:    " + $BaseRef)
 Write-Host ""
 
 # ---- 1. Enumerate worktrees ----
@@ -276,7 +290,7 @@ foreach ($t in $allTargets) {
             }
             if ($extraSize) { $row.IgnoredSizeMB = [math]::Round($extraSize / 1MB, 2) }
 
-            $aheadRaw = & git -C $t.Path rev-list --count master..HEAD 2>$null
+            $aheadRaw = & git -C $t.Path rev-list --count ("{0}..HEAD" -f $BaseRef) 2>$null
             if ($LASTEXITCODE -eq 0 -and $aheadRaw) { $row.CommitsAhead = [int]$aheadRaw }
         } catch {
             $row.Notes += ("git status failed: " + $_.Exception.Message)

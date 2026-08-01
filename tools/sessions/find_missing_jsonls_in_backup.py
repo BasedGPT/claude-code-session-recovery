@@ -37,13 +37,14 @@ import argparse
 import glob
 import json
 import os
-import platform
 import sys
 
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import build_snapshot, find_metadata_directories
+    from session_state import (
+        build_snapshot, default_claude_paths, find_metadata_directories,
+    )
     from transcript_files import build_transcript_index
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
@@ -51,17 +52,7 @@ except ImportError as exc:
     sys.exit(1)
 
 # --- Configuration ---
-def _default_appdata_claude_dir():
-    """Return the platform-appropriate Claude app-data directory."""
-    _sys = platform.system()
-    if _sys == "Darwin":
-        return os.path.expanduser("~/Library/Application Support/Claude")
-    if _sys == "Linux":
-        return os.path.expanduser("~/.config/Claude")
-    return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude")
-
-APPDATA_CLAUDE_DIR = _default_appdata_claude_dir()
-PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+APPDATA_CLAUDE_DIR, PROJECTS_DIR = default_claude_paths()
 
 # Add backup directory roots here. Each entry should be the parent directory
 # that contains slug-named subdirectories (same layout as ~/.claude/projects/).

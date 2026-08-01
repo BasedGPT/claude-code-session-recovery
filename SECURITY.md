@@ -71,7 +71,7 @@ The toolkit applies these conditions before mutation:
 - No undocumented write destinations; every mutator prints its destination and rollback path before applying
 - No registry reads or writes
 - No clipboard access
-- Session tools spawn only their documented local helpers: `tasklist`, `claude --version` for version detection, and PowerShell plus `vssadmin` for `restore_from_vss.py`. Worktree tools invoke Git as documented in the lifecycle guide.
+- Session tools spawn only their documented local helpers: Windows `tasklist`, macOS `pgrep`/`ps`, `claude --version` for version detection, and PowerShell plus `vssadmin` for `restore_from_vss.py`. Worktree tools invoke Git as documented in the lifecycle guide.
 
 ## Reproducibility
 

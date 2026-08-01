@@ -35,22 +35,25 @@ import sys
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import build_snapshot, find_metadata_directories
+    from session_state import build_snapshot, default_claude_paths, find_metadata_directories
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/audit_root_cwd_sessions.py")
     sys.exit(1)
 
 # --- Configuration ---
-APPDATA_CLAUDE_DIR = os.path.join(
-    os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
-)
+APPDATA_CLAUDE_DIR, _PROJECTS_DIR = default_claude_paths()
 
-# Add your repository root(s) here, lower-cased. Sessions started from these
-# paths with a branch name starting "claude/" will appear in the report.
+# Add your repository root(s) here. Paths are normalised with the current
+# platform's path rules before comparison.
 REPO_ROOTS = {
-    # r"c:\users\you\projects\my-repo",
+    # r"C:\Users\you\projects\my-repo",
 }
+
+
+def _normalise_path(path):
+    """Normalise a configured or recorded path for this operating system."""
+    return os.path.normcase(os.path.normpath(os.path.expanduser(path)))
 
 
 def main():
@@ -98,8 +101,9 @@ def main():
             if not branch.startswith("claude/"):
                 continue
 
-            cwd_norm = cwd.replace("/", "\\").rstrip("\\").lower()
-            if REPO_ROOTS and cwd_norm not in REPO_ROOTS:
+            cwd_norm = _normalise_path(cwd)
+            configured_roots = {_normalise_path(root) for root in REPO_ROOTS}
+            if configured_roots and cwd_norm not in configured_roots:
                 continue
 
             rows.append({

@@ -22,12 +22,12 @@ Files written:
     (updated in place, with --apply only)
 
 Backup created at:
-  - ./repair-backup/<timestamp>/<filename>.json  (alongside this script, always)
+  - ./repair-backup/<timestamp>/<account-uuid>/<org-uuid>/<filename>.json
+    (alongside this script, always)
 
-Rollback command:
-  - copy /Y ".\\repair-backup\\<timestamp>\\local_<uuid>.json"
-         "%APPDATA%\\Claude\\claude-code-sessions\\<account-uuid>\\<org-uuid>\\local_<uuid>.json"
-    (overwrites the applied file with the original)
+Rollback:
+  - restore the file from its timestamp/account/org backup path to the matching
+    metadata directory (overwrites the applied file with the original)
 
 Caveats:
   - This tool updates cwd and originCwd. It does not move JSONL files.
@@ -48,17 +48,16 @@ import argparse
 import glob
 import json
 import os
-import platform
 import sys
 from datetime import datetime
 
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import find_metadata_directories, slug_encode
+    from session_state import default_claude_paths, find_metadata_directories, slug_encode
     from mutator_safety import (
         atomic_write_json, current_snapshot_and_diagnosis_id, diagnosis_mode,
-        resolve_state_paths, verified_backup,
+        metadata_backup_path, resolve_state_paths, verified_backup,
     )
     from transcript_files import build_transcript_index, first_cwd
 except ImportError as exc:
@@ -68,26 +67,7 @@ except ImportError as exc:
 
 # --- Configuration ---
 
-def _default_paths():
-    """Return (appdata_claude_dir, projects_dir) for the current platform."""
-    _sys = platform.system()
-    if _sys == "Darwin":
-        return (
-            os.path.expanduser("~/Library/Application Support/Claude"),
-            os.path.expanduser("~/.claude/projects"),
-        )
-    if _sys == "Linux":
-        return (
-            os.path.expanduser("~/.config/Claude"),
-            os.path.expanduser("~/.claude/projects"),
-        )
-    return (
-        os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"),
-        os.path.join(os.path.expanduser("~"), ".claude", "projects"),
-    )
-
-
-APPDATA_CLAUDE_DIR, PROJECTS_DIR = _default_paths()
+APPDATA_CLAUDE_DIR, PROJECTS_DIR = default_claude_paths()
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -327,7 +307,7 @@ def main():
         # APPLY -----------------------------------------------------------------
 
         os.makedirs(backup_dir, exist_ok=True)
-        backup_path = os.path.join(backup_dir, meta_name)
+        backup_path = metadata_backup_path(meta_path, appdata_claude_dir, backup_dir)
         try:
             verified_backup(meta_path, backup_path)
         except OSError as e:

@@ -13,7 +13,7 @@ This runs best from a **Claude Code CLI session** (or Codex/ChatGPT), not from C
 
 **Step 1 — open a CLI session**
 
-Open Windows Terminal, PowerShell, or cmd, then run:
+Open a terminal (Windows Terminal, PowerShell, cmd, or macOS Terminal), then run:
 
 ```
 claude
@@ -24,7 +24,7 @@ That starts Claude Code in your terminal.
 **Step 2 — paste this prompt**
 
 ```
-My Claude Code sessions are broken on Windows. Please help me fix them using https://github.com/BasedGPT/claude-code-session-recovery
+My Claude Code sessions are broken on Windows or macOS. Please help me fix them using https://github.com/BasedGPT/claude-code-session-recovery
 
 1. Clone the repo and cd into it: `git clone https://github.com/BasedGPT/claude-code-session-recovery` then `cd claude-code-session-recovery`
 2. Read AGENTS.md — it's written for AI assistants and explains how to use this repo safely
@@ -154,17 +154,17 @@ python tools/sessions/recover_vscode_sessions.py --apply  # writes changes (VS C
 
 The tools above repair problems after they occur. These run proactively, so you have a clean recovery path if something goes wrong next time.
 
-**Two directories matter.** A complete backup needs both `%APPDATA%\Claude\claude-code-sessions\` (Desktop metadata — the session index) and `~\.claude\projects\` (transcript files — conversation history). Backing up transcripts alone leaves you with orphaned `.jsonl` files that won't appear in the Desktop sidebar; you'd need to run `synth_session_metadata.py` on top of the restore to link them. The `backup_claude_state.py` script below covers both layers automatically.
+**Two directories matter.** A complete backup needs both the platform's Claude Desktop metadata directory (`%APPDATA%\Claude\claude-code-sessions\` on Windows or `~/Library/Application Support/Claude/claude-code-sessions/` on macOS) and `~/.claude/projects/` (transcript files — conversation history). Backing up transcripts alone leaves you with orphaned `.jsonl` files that won't appear in the Desktop sidebar; you'd need to run `synth_session_metadata.py` on top of the restore to link them. The `backup_claude_state.py` script below covers both layers automatically.
 
 ### Weekly backup: `tools/sessions/backup_claude_state.py`
 
 Takes a compressed snapshot of all three data layers that Claude Code depends on:
 
-- **Desktop metadata** — `%APPDATA%\Claude\claude-code-sessions\` (the session index Desktop reads on startup)
-- **JSONL transcripts** — `~\.claude\projects\` (the actual conversation history)
+- **Desktop metadata** — the platform-specific Claude Desktop `claude-code-sessions/` directory (the session index Desktop reads on startup)
+- **JSONL transcripts** — `~/.claude/projects/` (the actual conversation history)
 - **FTS5 transcript index** — if you have one configured
 
-Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. Old snapshots are automatically sent to the Recycle Bin — the default keeps the last 5 backups.
+Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. Old snapshots are automatically sent to the system Trash/Recycle Bin — the script's default retention is configured by `KEEP_DAYS`.
 
 **Run it manually:**
 
@@ -301,4 +301,4 @@ The toolkit works on macOS with path adjustments. Two directories matter for dia
 
 ---
 
-Requirements: Python 3.11+. Windows and macOS: full support. Windows MSIX (Microsoft Store) install: `diagnose.py` only — write-bearing scripts do not work (see [MSIX note](#msix-microsoft-store-installs)). No dependencies outside the standard library.
+Requirements: Python 3.11+. Windows and macOS: full support. Windows MSIX (Microsoft Store) install: `diagnose.py` only — write-bearing scripts do not work (see [MSIX note](#msix-microsoft-store-installs)). Runtime dependencies are standard-library only; contributors should install `requirements-dev.txt` for tests.

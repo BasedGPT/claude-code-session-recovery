@@ -7,7 +7,7 @@ Open an issue and include:
 - Output of `python tools/diagnose.py` (the most useful thing you can provide)
 - Claude Code CLI version (`claude --version`)
 - Claude Desktop version (Help → About)
-- Windows version
+- Operating system and version
 
 ## Pull requests
 
@@ -26,6 +26,7 @@ PRs that add new mutator scripts must pass all five mutator gates (see `docs/arc
 Run both suites before submitting a change:
 
 ```text
+python -m pip install -r requirements-dev.txt
 python -m pytest -q tests
 python tests/run_fixture_tests.py
 ```
@@ -47,7 +48,8 @@ Shared modules under `tools/` own reusable implementation. Executable scripts
 own their CLI interface, reporting, paths, and repair policy. Preserve those
 observable contracts when moving code across the seam.
 
-Cross-platform support (macOS, Linux) is deferred to v2. PRs adding it are welcome in principle but will not be prioritised by the maintainer.
+The supported desktop platforms are Windows and macOS. Linux paths are kept
+explicit where useful, but Linux is not a release support target.
 
 ## Contact
 

@@ -3,7 +3,7 @@
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
-    "windows": "11"
+    "platform": "fixture"
   },
   "schema_probe": "recognised",
   "install_type": null,

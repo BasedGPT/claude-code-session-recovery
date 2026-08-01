@@ -9,11 +9,18 @@ on:
 
 jobs:
   fixtures:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run fixture tests
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run pytest suite
+        run: python -m pytest -q tests
+      - name: Run fixture contract tests
         run: python tests/run_fixture_tests.py

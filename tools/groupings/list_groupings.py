@@ -6,8 +6,8 @@ Chromium Local Storage (LevelDB) and reports which sessions belong to
 which group. This tool is read-only. It does not modify any files.
 
 Files read:
-  - %APPDATA%\\Claude\\Local Storage\\leveldb\\*.ldb  (SSTable data)
-  - %APPDATA%\\Claude\\Local Storage\\leveldb\\*.log  (WAL log, uncompacted writes)
+  - Claude Desktop's platform-specific Local Storage/leveldb/*.ldb (SSTable data)
+  - Claude Desktop's platform-specific Local Storage/leveldb/*.log (WAL data)
 
 Files written:
   - Nothing. Read-only.
@@ -42,11 +42,13 @@ import struct
 import sys
 from collections import Counter
 
+_TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from platform_support import default_groupings_store  # noqa: E402
+
 # Derived at module level from the environment; no I/O at import time.
-_DEFAULT_STORE = os.path.join(
-    os.environ.get("APPDATA", ""),
-    "Claude", "Local Storage", "leveldb",
-)
+_DEFAULT_STORE = default_groupings_store()
 
 # Chromium's LevelDB magic differs from the upstream LevelDB magic.
 # Pure-Python parsers using the upstream magic silently skip all Chromium files.

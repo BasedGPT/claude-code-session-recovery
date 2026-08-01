@@ -49,8 +49,8 @@ import subprocess
 import sys
 
 try:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-except AttributeError:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
     pass  # no buffer when stdout is None (e.g. pythonw.exe or redirected NUL)
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))

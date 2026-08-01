@@ -28,6 +28,25 @@ def test_redact_user_home(monkeypatch):
     assert "PrivateName" not in result
 
 
+def test_redact_snapshot_removes_home_paths_recursively(monkeypatch):
+    monkeypatch.setattr(diagnose.os.path, "expanduser", lambda _value: r"C:\Users\PrivateName")
+    monkeypatch.setattr(diagnose.platform, "system", lambda: "Windows")
+
+    result = diagnose._redact_snapshot(
+        {
+            "msix_real_path": r"C:\Users\PrivateName\AppData\Local\Packages\Claude_example",
+            "cwd": r"C:\Users\PrivateName\Workspace\repo",
+            "nested": [
+                {"some_path": r"C:\Users\PrivateName\secret.txt"},
+            ],
+        }
+    )
+
+    assert "PrivateName" not in repr(result)
+    assert result["msix_real_path"].startswith("%USERPROFILE%")
+    assert result["cwd"].startswith("%USERPROFILE%")
+
+
 def test_recursive_search_quiet_hides_identifiers_and_paths(tmp_path, capsys):
     session_id = "12345678-1234-1234-1234-123456789abc"
     private_dir = tmp_path / "Private Client"

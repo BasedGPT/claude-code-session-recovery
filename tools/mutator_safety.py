@@ -8,9 +8,9 @@ the already-approved mutation safely.
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 
+from platform_support import desktop_process_running
 from session_state import build_snapshot, make_diagnosis_id
 
 
@@ -52,6 +52,7 @@ def current_snapshot_and_diagnosis_id(appdata_claude_dir, projects_dir, fixture_
 def verified_backup(source_path, backup_path):
     """Publish a byte-verified backup without exposing a partial final file."""
     directory = os.path.dirname(os.path.abspath(backup_path))
+    os.makedirs(directory, exist_ok=True)
     fd, temporary_path = tempfile.mkstemp(
         prefix="." + os.path.basename(backup_path) + ".",
         suffix=".tmp",
@@ -131,14 +132,13 @@ def atomic_copy_file(source_path, destination_path):
             os.remove(temporary_path)
 
 
-def desktop_process_running():
-    """Return true when the existing tasklist probe finds or cannot rule out Desktop."""
-    try:
-        output = subprocess.check_output(
-            ["tasklist", "/FI", "IMAGENAME eq claude.exe", "/NH"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-        return "claude.exe" in output.lower()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return True
+def metadata_backup_path(source_path, appdata_claude_dir, backup_dir):
+    """Return a collision-free backup path preserving account/org folders."""
+    metadata_root = os.path.abspath(
+        os.path.join(appdata_claude_dir, "claude-code-sessions")
+    )
+    source_abs = os.path.abspath(source_path)
+    relative = os.path.relpath(source_abs, metadata_root)
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        raise ValueError("metadata path is outside the Claude sessions root")
+    return os.path.join(backup_dir, relative)

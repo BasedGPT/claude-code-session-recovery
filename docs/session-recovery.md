@@ -2,6 +2,11 @@
 
 Your Claude Desktop is broken in one of these ways. Run `python tools/diagnose.py` first — it identifies your exact problem and prints the next command.
 
+The tools resolve the data directories automatically. On Windows, Desktop metadata
+is under `%APPDATA%\Claude\claude-code-sessions\`; on macOS it is under
+`~/Library/Application Support/Claude/claude-code-sessions/`. Transcripts are under
+`~/.claude/projects/` on both platforms.
+
 | Problem | Has automatic repair? |
 |---|---|
 | Session missing conversation history | Yes |
@@ -20,7 +25,7 @@ Your Claude Desktop is broken in one of these ways. Run `python tools/diagnose.p
 
 **Why it happens (plain).** Every Claude Desktop session is stored as two pieces. One holds the title, model, and date — that's what shows in your session list. The other holds the conversation history. A small link connects them. For these sessions, that link is missing. Desktop can still show the session in the list because the first piece is intact, but has no way to find the conversation history to display. The chat opens with "No messages yet": the placeholder Desktop shows when there's nothing to render.
 
-**Why it happens (technical).** Session state lives in two files: the metadata file at `%APPDATA%\Claude\claude-code-sessions\<account>\<org>\local_<uuid>.json` (title, model, date, MCP config) and the transcript file at `~\.claude\projects\<project-slug>\<uuid>.jsonl` (the messages). The metadata's `cliSessionId` field carries the transcript filename's UUID stem. When it is missing or null, Desktop renders the entry in your session list from the metadata but has no handle to load the transcript with — so the chat opens with the "No messages yet" placeholder. See [architecture.md#the-two-layer-session-model](architecture.md#the-two-layer-session-model) for the full model.
+**Why it happens (technical).** Session state lives in two files: the platform-specific Desktop metadata file under `claude-code-sessions/<account>/<org>/local_<uuid>.json` (title, model, date, MCP config) and the transcript file under `~/.claude/projects/<project-slug>/<uuid>.jsonl` (the messages). The metadata's `cliSessionId` field carries the transcript filename's UUID stem. When it is missing or null, Desktop renders the entry in your session list from the metadata but has no handle to load the transcript with — so the chat opens with the "No messages yet" placeholder. See [architecture.md#the-two-layer-session-model](architecture.md#the-two-layer-session-model) for the full model.
 
 **What `diagnose.py` reports:**
 
@@ -34,7 +39,7 @@ PROBLEM FOUND: Sessions appear in the session list but open with no conversation
     python tools/sessions/repair_session_metadata.py --diagnosis-id <id> --apply
 ```
 
-**Before running the mutator:** Quit Claude Desktop fully — window and tray. Verify with `tasklist /FI "IMAGENAME eq claude.exe"`. Desktop holds metadata in memory and will overwrite repairs if it is still running. See [architecture.md#in-memory-cache-behaviour](architecture.md#in-memory-cache-behaviour).
+**Before running the mutator:** Quit Claude Desktop fully. On Windows verify with `tasklist /FI "IMAGENAME eq claude.exe"`; on macOS verify with `pgrep -x Claude`. Desktop holds metadata in memory and will overwrite repairs if it is still running. See [architecture.md#in-memory-cache-behaviour](architecture.md#in-memory-cache-behaviour).
 
 **Recovery time:** 2–5 minutes.
 

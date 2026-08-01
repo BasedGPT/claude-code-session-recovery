@@ -38,7 +38,6 @@ import argparse
 import glob
 import json
 import os
-import platform
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -46,7 +45,7 @@ from datetime import datetime, timezone
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import find_metadata_directories
+    from session_state import default_claude_paths, find_metadata_directories
     from mutator_safety import (
         atomic_copy_file, atomic_write_json, current_snapshot_and_diagnosis_id,
         diagnosis_mode, resolve_state_paths,
@@ -59,26 +58,7 @@ except ImportError as exc:
 
 # --- Configuration ---
 
-def _default_paths():
-    """Return (appdata_claude_dir, projects_dir) for the current platform."""
-    _sys = platform.system()
-    if _sys == "Darwin":
-        return (
-            os.path.expanduser("~/Library/Application Support/Claude"),
-            os.path.expanduser("~/.claude/projects"),
-        )
-    if _sys == "Linux":
-        return (
-            os.path.expanduser("~/.config/Claude"),
-            os.path.expanduser("~/.claude/projects"),
-        )
-    return (
-        os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"),
-        os.path.join(os.path.expanduser("~"), ".claude", "projects"),
-    )
-
-
-APPDATA_CLAUDE_DIR, PROJECTS_DIR = _default_paths()
+APPDATA_CLAUDE_DIR, PROJECTS_DIR = default_claude_paths()
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(TOOL_DIR, "synth-out")

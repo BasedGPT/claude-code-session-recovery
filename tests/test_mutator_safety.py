@@ -86,6 +86,27 @@ class MutatorSafetyTests(unittest.TestCase):
         self.assertEqual(appdata, os.path.join(os.path.abspath(self.root), "appdata", "Claude"))
         self.assertEqual(projects, os.path.join(os.path.abspath(self.root), "projects"))
 
+    def test_metadata_backup_path_preserves_account_and_organisation(self):
+        appdata = os.path.join(self.root, "appdata", "Claude")
+        source = os.path.join(
+            appdata,
+            "claude-code-sessions",
+            "account-a",
+            "organisation-a",
+            "local_same-name.json",
+        )
+        backup_dir = os.path.join(self.root, "repair-backup")
+
+        self.assertEqual(
+            mutator_safety.metadata_backup_path(source, appdata, backup_dir),
+            os.path.join(
+                backup_dir,
+                "account-a",
+                "organisation-a",
+                "local_same-name.json",
+            ),
+        )
+
     def test_verified_backup_refuses_copy_failure_before_any_write(self):
         source = os.path.join(self.root, "source.json")
         backup = os.path.join(self.root, "backup.json")
@@ -203,12 +224,9 @@ class MutatorSafetyTests(unittest.TestCase):
             [name for name in os.listdir(self.root) if name.endswith(".tmp")], []
         )
 
-    def test_desktop_probe_fails_closed_when_tasklist_is_unavailable(self):
-        with mock.patch.object(
-            mutator_safety.subprocess,
-            "check_output",
-            side_effect=FileNotFoundError(),
-        ):
+    def test_desktop_probe_fails_closed_when_windows_probe_is_unavailable(self):
+        with mock.patch("platform_support.platform.system", return_value="Windows"), \
+                mock.patch("platform_support.subprocess.run", side_effect=FileNotFoundError()):
             self.assertTrue(mutator_safety.desktop_process_running())
 
 

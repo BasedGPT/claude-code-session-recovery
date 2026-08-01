@@ -64,7 +64,7 @@ if hasattr(sys.stderr, "reconfigure"):
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import find_metadata_directories
+    from session_state import default_claude_appdata_dir, find_metadata_directories
     from mutator_safety import (
         current_snapshot_and_diagnosis_id, diagnosis_mode, resolve_state_paths,
     )
@@ -79,9 +79,7 @@ except ImportError as exc:
 REPO_ROOT = os.getcwd()
 
 # APPDATA_CLAUDE_DIR: used in live mode (not --state).
-APPDATA_CLAUDE_DIR = os.path.join(
-    os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
-)
+APPDATA_CLAUDE_DIR = default_claude_appdata_dir()
 
 
 # ---------------------------------------------------------------------------

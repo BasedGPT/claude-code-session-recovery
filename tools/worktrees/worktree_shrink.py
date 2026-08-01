@@ -22,7 +22,7 @@ Pipeline:
 
 Usage:
   worktree_shrink.py <name>                       # dry-run (default)
-  worktree_shrink.py <name> --apply               # shrink (branch must be --merged master)
+  worktree_shrink.py <name> --apply               # shrink (branch must be merged)
   worktree_shrink.py <name> --apply --squash-merged
   worktree_shrink.py <name> --apply --allow-unmerged
   worktree_shrink.py --resume <manifest-path>     # resume failed shrink
@@ -34,13 +34,20 @@ up at the next idempotent step.
 
 import argparse
 import hashlib
-import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
+
+_TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from platform_support import (  # noqa: E402
+    desktop_process_check_command,
+    desktop_process_running as platform_desktop_process_running,
+)
 
 from worktree_lifecycle import (
     MARKER_IN_PROGRESS_PREFIX,
@@ -58,7 +65,10 @@ from worktree_lifecycle import (
 )
 
 if __name__ == '__main__':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
 
 
 # ----- Configuration ----------------------------------------------------------
@@ -115,15 +125,8 @@ def fs_ts():
 
 
 def desktop_running():
-    """True iff claude.exe is in the tasklist (case-insensitive)."""
-    try:
-        out = subprocess.check_output(
-            ['tasklist', '/FI', 'IMAGENAME eq claude.exe', '/NH'],
-            stderr=subprocess.DEVNULL, text=True
-        )
-        return 'claude.exe' in out.lower()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return True  # fail-safe
+    """Return whether Claude Desktop is running on the current platform."""
+    return platform_desktop_process_running()
 
 
 def git(*args, cwd=None, check=False):
@@ -149,6 +152,19 @@ def git(*args, cwd=None, check=False):
 def git_ok(*args, cwd=None):
     """True iff a git command exits successfully."""
     return git(*args, cwd=cwd)[0] == 0
+
+
+def base_branch():
+    """Return the repository's default branch ref, preferring origin/HEAD."""
+    rc, out, _ = git(
+        'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'
+    )
+    if rc == 0 and out.strip():
+        return out.strip()
+    for candidate in ('main', 'master'):
+        if git_ok('rev-parse', '--verify', candidate):
+            return candidate
+    return 'main'
 
 
 def worktree_path(name):
@@ -357,25 +373,27 @@ def classify_content(target_path):
 # ----- Branch mode checks ----------------------------------------------------
 
 def branch_is_merged(branch):
-    rc, out, _ = git('branch', '--merged', 'master', '--list', branch)
+    base = base_branch()
+    rc, out, _ = git('branch', '--merged', base, '--list', branch)
     if rc != 0:
         return False
     return any(line.strip().lstrip('* ').strip() == branch for line in out.splitlines() if line.strip())
 
 
 def branch_squash_equivalent(branch):
-    """`git cherry master <branch>` lists unique commits with '+'. Zero '+'
-    lines means every commit is patch-equivalent on master (squash-merged)."""
-    rc, out, _ = git('cherry', 'master', branch)
+    """Return whether every branch commit is patch-equivalent on the base."""
+    base = base_branch()
+    rc, out, _ = git('cherry', base, branch)
     if rc != 0:
         return False
     return not any(line.startswith('+') for line in out.splitlines())
 
 
 def unmerged_commit_subjects(branch):
-    """Subjects of commits in `branch` not on master. Stderr-logged when
+    """Subjects of commits in `branch` not on the base. Stderr-logged when
     --allow-unmerged is in effect, so the user sees what they're abandoning."""
-    rc, out, _ = git('log', '--oneline', f'master..{branch}')
+    base = base_branch()
+    rc, out, _ = git('log', '--oneline', f'{base}..{branch}')
     if rc != 0:
         return []
     return [line for line in out.splitlines() if line]
@@ -435,18 +453,19 @@ def run_verification(name, target_path, branch, branch_mode, apply_mode):
     if not branch:
         reasons.append('branch is empty or detached')
     else:
+        base = base_branch()
         if branch_mode == 'merged':
             if not branch_is_merged(branch):
-                reasons.append(f'branch {branch} is NOT merged into master '
+                reasons.append(f'branch {branch} is NOT merged into {base} '
                                f'(use --squash-merged or --allow-unmerged to override)')
         elif branch_mode == 'squash-merged':
             if not branch_squash_equivalent(branch):
-                reasons.append(f'branch {branch} has commits not patch-equivalent on master')
+                reasons.append(f'branch {branch} has commits not patch-equivalent on {base}')
         elif branch_mode == 'allow-unmerged':
             subs = unmerged_commit_subjects(branch)
             if subs:
                 sys.stderr.write(f'WARNING: --allow-unmerged: {len(subs)} commits '
-                                 f'on {branch} not on master. Branch ref preserves them:\n')
+                                 f'on {branch} not on {base}. Branch ref preserves them:\n')
                 for s in subs[:20]:
                     sys.stderr.write(f'  {s}\n')
                 if len(subs) > 20:
@@ -480,12 +499,12 @@ def run_verification(name, target_path, branch, branch_mode, apply_mode):
     except OSError:
         pass
 
-    # Desktop tasklist gate (UX, not safety)
+    # Desktop process gate (UX, not safety)
     if apply_mode and desktop_running():
         reasons.append(
-            'claude.exe is running -- the worktree may be open in a Desktop '
-            'session. Quit Claude Desktop fully (window + tray) and re-run. '
-            'Verify: tasklist /FI "IMAGENAME eq claude.exe"')
+            'Claude Desktop is running -- the worktree may be open in a Desktop '
+            'session. Quit Claude Desktop fully and re-run. Verify: '
+            + desktop_process_check_command())
 
     # No-op rename test (the actual safety)
     if apply_mode:
@@ -993,7 +1012,7 @@ def main():
     ap.add_argument('--apply', action='store_true', help='Execute. Default is dry-run.')
     ap.add_argument('--dry-run', action='store_true', help='Preview only (default).')
     ap.add_argument('--squash-merged', action='store_true',
-                    help='Permit shrink if every commit is patch-equivalent on master.')
+                    help='Permit shrink if every commit is patch-equivalent on the base branch.')
     ap.add_argument('--allow-unmerged', action='store_true',
                     help='Permit shrink even when commits are unique to the branch. '
                          'Branch ref preserves them.')

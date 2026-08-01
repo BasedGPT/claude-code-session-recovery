@@ -25,7 +25,7 @@ labels: bug
 
 - Claude Code CLI version (`claude --version`):
 - Claude Desktop version (right-click tray → About):
-- Windows version (`winver`):
+- Operating system and version:
 
 ## Anything else?
 

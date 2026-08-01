@@ -17,10 +17,11 @@ Files written:
     (only with --apply; cliSessionId field added in-place)
 
 Backup created at:
-  - ./repair-backup/<original-filename>.json  (alongside this script)
+  - ./repair-backup/<account-uuid>/<org-uuid>/<original-filename>.json
+    (alongside this script; account/org directories prevent filename collisions)
 
-Rollback command:
-  - copy /Y repair-backup\\*.json "%APPDATA%\\Claude\\claude-code-sessions\\<account-uuid>\\<org-uuid>\\"
+Rollback:
+  - restore each file from the backup tree to its matching account/org directory
 
 Usage:
     python tools/sessions/repair_session_metadata.py --diagnosis-id <hex>
@@ -31,7 +32,6 @@ import argparse
 import glob
 import json
 import os
-import platform
 import sys
 from datetime import datetime, timezone
 
@@ -39,10 +39,10 @@ from datetime import datetime, timezone
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import find_metadata_directories
+    from session_state import default_claude_paths, find_metadata_directories
     from mutator_safety import (
         current_snapshot_and_diagnosis_id, diagnosis_mode,
-        resolve_state_paths, verified_backup,
+        metadata_backup_path, resolve_state_paths, verified_backup,
         write_json_in_place,
     )
     from transcript_files import build_transcript_index, first_iso_timestamp_and_user
@@ -54,41 +54,7 @@ except ImportError as exc:
 # --- Configuration ---
 # Used when --state is not supplied (live mode).
 
-def _default_paths():
-    """Return (appdata_claude_dir, projects_dir) for the current platform."""
-    _sys = platform.system()
-    if _sys == "Darwin":
-        return (
-            os.path.expanduser("~/Library/Application Support/Claude"),
-            os.path.expanduser("~/.claude/projects"),
-        )
-    if _sys == "Linux":
-        return (
-            os.path.expanduser("~/.config/Claude"),
-            os.path.expanduser("~/.claude/projects"),
-        )
-    _appdata_claude = os.path.join(
-        os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
-    )
-    if not os.path.isdir(_appdata_claude):
-        _local = os.environ.get("LOCALAPPDATA", "")
-        _pkgs = os.path.join(_local, "Packages")
-        if os.path.isdir(_pkgs):
-            for _pkg in sorted(os.listdir(_pkgs)):
-                if _pkg.startswith("Claude_"):
-                    _cand = os.path.join(
-                        _pkgs, _pkg, "LocalCache", "Roaming", "Claude"
-                    )
-                    if os.path.isdir(_cand):
-                        _appdata_claude = _cand
-                        break
-    return (
-        _appdata_claude,
-        os.path.join(os.path.expanduser("~"), ".claude", "projects"),
-    )
-
-
-APPDATA_CLAUDE_DIR, PROJECTS_DIR = _default_paths()
+APPDATA_CLAUDE_DIR, PROJECTS_DIR = default_claude_paths()
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKUP_DIR = os.path.join(TOOL_DIR, "repair-backup")
@@ -380,7 +346,10 @@ def main():
         print()
 
         if args.apply:
-            verified_backup(path, os.path.join(BACKUP_DIR, fname))
+            verified_backup(
+                path,
+                metadata_backup_path(path, appdata_claude_dir, BACKUP_DIR),
+            )
             repaired_meta = dict(meta)
             repaired_meta["cliSessionId"] = cli_match
             repaired_meta.pop("transcriptUnavailable", None)

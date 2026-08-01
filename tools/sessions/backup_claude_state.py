@@ -2,18 +2,19 @@
 Daily snapshot of Claude Code's three stateful data layers.
 
 Takes a compressed backup of:
-  1. Desktop metadata  %APPDATA%/Claude/claude-code-sessions/<acct>/<org>/
+  1. Desktop metadata  the platform-specific Claude claude-code-sessions/<acct>/<org>/
   2. JSONL transcripts ~/.claude/projects/
   3. FTS5 index        <TRANSCRIPT_DB> (if configured)
 
 Each is written to a dated zip (or copied DB) under BACKUPS_ROOT. Retains
-the last KEEP_DAYS daily snapshots; older ones are sent to the Recycle Bin.
+the last KEEP_DAYS daily snapshots; older ones are sent to the system Trash or
+Recycle Bin.
 
 Safe to run while Claude Desktop is open -- all source operations are read-only.
 
 Files read:
-  - %APPDATA%/Claude/claude-code-sessions/<account-uuid>/<org-uuid>/*
-  - %USERPROFILE%/.claude/projects/**
+  - Claude Desktop's platform-specific claude-code-sessions/<account-uuid>/<org-uuid>/*
+  - ~/.claude/projects/**
   - TRANSCRIPT_DB path if configured
 
 Files written:
@@ -53,10 +54,11 @@ Restoring from backup — read this first:
 import argparse
 import atexit
 import ctypes
-import io
 import os
+import platform
 import re
 import sqlite3
+import shutil
 import sys
 import time
 import zipfile
@@ -65,8 +67,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 try:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-except AttributeError:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
     pass  # no buffer when stdout is None (e.g. pythonw.exe or redirected NUL)
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -76,7 +78,7 @@ from lock_utils import acquire_lock, release_lock  # noqa: E402
 _DIAGNOSE_DIR = os.path.dirname(TOOL_DIR)
 sys.path.insert(0, _DIAGNOSE_DIR)
 try:
-    from session_state import build_snapshot
+    from session_state import build_snapshot, default_claude_appdata_dir
 except ImportError:
     build_snapshot = None
 
@@ -106,8 +108,7 @@ DEST_METADATA = os.path.join(BACKUPS_ROOT, "desktop-metadata")
 DEST_JSONL = os.path.join(BACKUPS_ROOT, "jsonl-projects")
 DEST_TRANSCRIPT = os.path.join(BACKUPS_ROOT, "transcript-index")
 SESSIONS_BASE = os.path.join(
-    os.environ.get("APPDATA", os.path.expanduser("~")),
-    "Claude", "claude-code-sessions",
+    default_claude_appdata_dir(), "claude-code-sessions"
 )
 
 # Matches YYYY-MM-DD and YYYY-MM-DD.zip -- used to identify daily snapshot entries.
@@ -128,7 +129,25 @@ class _SHFILEOPSTRUCT(ctypes.Structure):
 
 
 def _recycle(path):
-    """Send a file or directory to the Windows Recycle Bin via SHFileOperation."""
+    """Move a pruned snapshot to the platform's recoverable trash."""
+    if platform.system() == "Darwin":
+        trash_dir = os.path.expanduser("~/.Trash")
+        os.makedirs(trash_dir, exist_ok=True)
+        name = os.path.basename(os.path.abspath(path))
+        destination = os.path.join(trash_dir, name)
+        counter = 1
+        while os.path.exists(destination):
+            stem, extension = os.path.splitext(name)
+            destination = os.path.join(
+                trash_dir, "{}-{}{}".format(stem, counter, extension)
+            )
+            counter += 1
+        shutil.move(path, destination)
+        return
+    if platform.system() != "Windows":
+        raise OSError("recoverable snapshot pruning is supported on Windows and macOS only")
+
+    # Windows: send a file or directory to the Recycle Bin via SHFileOperation.
     FO_DELETE          = 0x0003
     FOF_ALLOWUNDO      = 0x0040
     FOF_NOCONFIRMATION = 0x0010
@@ -281,9 +300,7 @@ def main():
         # Schema probe (informational; backup proceeds regardless of schema version)
         if build_snapshot is not None and not DRY_RUN:
             try:
-                appdata_claude_dir = os.path.join(
-                    os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
-                )
+                appdata_claude_dir = default_claude_appdata_dir()
                 snap = build_snapshot(appdata_claude_dir, PROJECTS_ROOT)
                 if snap["schema_version"] == "unrecognised":
                     log("WARNING: state schema not recognised -- backup proceeds but "

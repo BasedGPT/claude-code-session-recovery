@@ -2,6 +2,10 @@
 
 Claude Desktop prunes old transcript files, and they can also disappear through accidental deletion or a failed backup restore. A missing JSONL is a starting point for investigation, not a verdict. Work through the checklist below before concluding the conversation is gone.
 
+The examples below use Windows environment-variable notation where a platform
+path differs. On macOS, use `~/Library/Application Support/Claude/` instead of
+`%APPDATA%\Claude\`, and `~/.claude/projects/` remains the transcript root.
+
 ---
 
 ## Where to look
@@ -49,9 +53,9 @@ Claude Desktop prunes old transcript files, and they can also disappear through 
 
    Partial recovery path. If the session's subagent compactions were indexed, `agent-acompact-*` records may contain conversation summaries. In one documented incident, this recovered 548 messages across 2 of 9 lost sessions. Querying the index requires SQL against an FTS5 database — more technical than the other options. See the "If nothing is found" section below if you want to pursue this path.
 
-6. **Recycle Bin**
+6. **Recycle Bin or Trash**
 
-   Long shot. If the file was deleted interactively rather than pruned by Desktop, it may still be in the Recycle Bin. Open the Recycle Bin in Explorer and look for a file matching the UUID stem, or check programmatically:
+   Long shot. If the file was deleted interactively rather than pruned by Desktop, it may still be in the Windows Recycle Bin or macOS Trash. Open the relevant system trash and look for a file matching the UUID stem, or check programmatically on Windows:
 
    ```powershell
    # List Recycle Bin contents for .jsonl files

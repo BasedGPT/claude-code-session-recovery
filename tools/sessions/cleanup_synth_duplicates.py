@@ -18,10 +18,11 @@ Files written:
     (deleted, with --apply only)
 
 Backup created at:
-  - ./cleanup-backup/<original-filename>.json  (alongside this script)
+  - ./cleanup-backup/<account-uuid>/<org-uuid>/<original-filename>.json
+    (alongside this script; account/org directories prevent filename collisions)
 
-Rollback command:
-  - copy /Y cleanup-backup\\*.json "%APPDATA%\\Claude\\claude-code-sessions\\<account-uuid>\\<org-uuid>\\"
+Rollback:
+  - restore each file from the backup tree to its matching account/org directory
 
 Usage:
     python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id <hex>
@@ -31,7 +32,6 @@ import argparse
 import glob
 import json
 import os
-import platform
 import sys
 from datetime import datetime, timezone
 
@@ -39,10 +39,10 @@ from datetime import datetime, timezone
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import find_metadata_directories
+    from session_state import default_claude_appdata_dir, find_metadata_directories
     from mutator_safety import (
         current_snapshot_and_diagnosis_id, diagnosis_mode, resolve_state_paths,
-        verified_backup,
+        metadata_backup_path, verified_backup,
     )
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
@@ -51,17 +51,7 @@ except ImportError as exc:
 
 # --- Configuration ---
 
-def _default_appdata_claude_dir():
-    """Return the platform-appropriate Claude app-data directory."""
-    _sys = platform.system()
-    if _sys == "Darwin":
-        return os.path.expanduser("~/Library/Application Support/Claude")
-    if _sys == "Linux":
-        return os.path.expanduser("~/.config/Claude")
-    return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude")
-
-
-APPDATA_CLAUDE_DIR = _default_appdata_claude_dir()
+APPDATA_CLAUDE_DIR = default_claude_appdata_dir()
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKUP_DIR = os.path.join(TOOL_DIR, "cleanup-backup")
@@ -298,7 +288,10 @@ def main():
             print()
 
             if args.apply:
-                verified_backup(path, os.path.join(BACKUP_DIR, fname))
+                verified_backup(
+                    path,
+                    metadata_backup_path(path, appdata_claude_dir, BACKUP_DIR),
+                )
                 os.remove(path)
 
             deleted += 1

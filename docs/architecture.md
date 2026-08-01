@@ -10,10 +10,11 @@ Claude Code sessions are stored in two independent locations that Desktop must r
 
 ```
 Desktop metadata (one file per session):
-  %APPDATA%\Claude\claude-code-sessions\<account-uuid>\<org-uuid>\local_<uuid>.json
+  Windows: %APPDATA%\Claude\claude-code-sessions\<account-uuid>\<org-uuid>\local_<uuid>.json
+  macOS:   ~/Library/Application Support/Claude/claude-code-sessions/<account-uuid>/<org-uuid>/local_<uuid>.json
 
 CLI transcript (the actual conversation):
-  %USERPROFILE%\.claude\projects\<slug>\<cli-session-id>.jsonl
+  Windows/macOS: ~/.claude/projects/<slug>/<cli-session-id>.jsonl
 ```
 
 The `cliSessionId` field in the metadata file is the link. When you click a session in Desktop's session list:
@@ -80,14 +81,15 @@ Desktop holds metadata files in memory and flushes back to disk periodically. **
 
 This is the most common cause of "I ran the repair but it didn't stick."
 
-Closing the Desktop window is not enough. Desktop continues running as a tray process and keeps flushing. You must quit fully:
+Closing the Desktop window is not enough. Desktop may continue running in the tray or menu bar and keep flushing. You must quit fully:
 
-1. Right-click the tray icon → Quit. The window and the tray icon must both disappear.
+1. Quit Claude Desktop from the Windows tray or macOS menu bar. The app must fully exit.
 2. Verify the process is gone:
    ```
-   tasklist /FI "IMAGENAME eq claude.exe"
+   Windows: tasklist /FI "IMAGENAME eq claude.exe"
+   macOS:  pgrep -x Claude
    ```
-   Expected: `INFO: No tasks are running which match the specified criteria.`
+   Expected: no matching process output on either platform.
 3. Only then run a mutator.
 
 The only mutations safe to attempt while Desktop is running are to files it has never loaded into memory — typically very old sessions that have not been clicked recently. Even then, the risk is not zero. Treat "quit first" as mandatory.
@@ -253,7 +255,7 @@ The predicate is evaluated against the snapshot `diagnose.py` produces from the 
 | `schema_version` | string | `"recognised"` or `"unrecognised"` |
 | `desktop_version` | string \| null | Detected from `%LOCALAPPDATA%\AnthropicClaude\app-X.Y.Z\` |
 | `cli_version` | string \| null | From `claude --version` if on PATH |
-| `desktop_running` | bool | Whether `claude.exe` is in the tasklist |
+| `desktop_running` | bool | Whether the platform-specific Claude Desktop process probe finds Desktop |
 
 ---
 

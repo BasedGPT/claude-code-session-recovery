@@ -20,9 +20,9 @@ labels: 'symptom-not-covered'
 ## State inventory (optional but very helpful)
 
 If you're comfortable, list:
-- How many `local_*.json` files in `%APPDATA%\Claude\claude-code-sessions\<account>\<org>\`
-- How many `*.jsonl` files in `~\.claude\projects\` (any slug directory)
-- Whether `claude.exe` is in the process list right now
+- How many `local_*.json` files in the platform's Claude `claude-code-sessions/<account>/<org>` directory
+- How many `*.jsonl` files in `~/.claude/projects/` (any slug directory)
+- Whether Claude Desktop is in the process list right now
 
 Do not paste real session UUIDs or transcripts. State-shape only.
 
@@ -30,4 +30,4 @@ Do not paste real session UUIDs or transcripts. State-shape only.
 
 - Claude Code CLI version:
 - Claude Desktop version:
-- Windows version:
+- Operating system and version:

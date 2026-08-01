@@ -37,7 +37,13 @@ import sys
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import build_snapshot, classify_cwd, find_metadata_directories, slug_encode
+    from session_state import (
+        build_snapshot,
+        classify_cwd,
+        default_claude_paths,
+        find_metadata_directories,
+        slug_encode,
+    )
     from transcript_files import build_transcript_index
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
@@ -45,10 +51,7 @@ except ImportError as exc:
     sys.exit(1)
 
 # --- Configuration ---
-APPDATA_CLAUDE_DIR = os.path.join(
-    os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
-)
-PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+APPDATA_CLAUDE_DIR, PROJECTS_DIR = default_claude_paths()
 
 
 def main():

@@ -3,8 +3,8 @@ Claude Code Desktop Session Recovery Tools -- Diagnostic
 =========================================================
 
 Files read:
-  - %APPDATA%\\Claude\\claude-code-sessions\\<account-uuid>\\<org-uuid>\\local_*.json
-  - %USERPROFILE%\\.claude\\projects\\<slug>\\*.jsonl
+  - Claude Desktop's platform-specific claude-code-sessions directory
+  - ~/.claude/projects/<slug>/*.jsonl (Windows/macOS)
   - %LOCALAPPDATA%\\AnthropicClaude\\  (version detection only)
 
 Files written:
@@ -28,6 +28,8 @@ import sys
 
 from session_state import (
     build_snapshot,
+    default_claude_paths,
+    desktop_process_check_command,
     make_diagnosis_id,
     scan_vscode_dropped_sessions,
     slug_encode,
@@ -58,6 +60,30 @@ def _redact_user_home(path):
         placeholder = "%USERPROFILE%" if platform.system() == "Windows" else "~"
         return placeholder + path[len(home):]
     return path
+
+
+def _redact_snapshot(value, key=None):
+    """Return a diagnostic snapshot safe to paste into an issue report."""
+    if isinstance(value, dict):
+        return {
+            child_key: _redact_snapshot(child_value, child_key)
+            for child_key, child_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_snapshot(item, key) for item in value]
+    if isinstance(value, str) and key:
+        lowered_key = key.lower()
+        if lowered_key == "cwd" or lowered_key.endswith("_path") or lowered_key == "repo_root":
+            return _redact_user_home(value)
+    return value
+
+
+def _shell_display_path(path):
+    """Return a redacted path that remains copy/pasteable in the shell."""
+    redacted = _redact_user_home(path)
+    if platform.system() == "Darwin" and isinstance(redacted, str) and redacted.startswith("~"):
+        return "$HOME" + redacted[1:]
+    return redacted
 
 
 # ---------------------------------------------------------------------------
@@ -160,23 +186,30 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None,
     lines.append("")
 
     if snapshot.get("desktop_running"):
+        check_command = desktop_process_check_command()
         if snapshot.get("running_inside_desktop"):
             lines.append("WARNING: You are running inside Claude Desktop itself.")
             lines.append("  You cannot quit Desktop to run mutators from this session.")
             lines.append("")
             lines.append("  Do this in order:")
-            lines.append("    1. Open a new terminal (cmd, PowerShell, or Windows Terminal)")
+            lines.append("    1. Open a new terminal or shell")
             if repo_root:
-                lines.append('    2. cd "{}"'.format(repo_root))
-            lines.append("    3. Quit Claude Desktop: right-click the tray icon -> Quit")
-            lines.append('    4. tasklist /FI "IMAGENAME eq claude.exe"  -- must show no results')
+                lines.append('    2. cd "{}"'.format(_shell_display_path(repo_root)))
+            if platform.system() == "Darwin":
+                lines.append("    3. Quit Claude Desktop from the menu bar")
+            else:
+                lines.append("    3. Quit Claude Desktop fully (window and tray)")
+            lines.append(f"    4. {check_command}  -- must show no results")
             lines.append("    5. Run the repair commands printed below")
         else:
-            lines.append("WARNING: Claude Desktop appears to be running (claude.exe in tasklist).")
+            lines.append("WARNING: Claude Desktop appears to be running.")
             lines.append("  Diagnose is safe -- it is read-only.")
             lines.append("  Repair commands below will NOT work until Desktop is fully quit.")
-            lines.append("  Quit: right-click the tray icon -> Quit. Then verify:")
-            lines.append('    tasklist /FI "IMAGENAME eq claude.exe"')
+            if platform.system() == "Darwin":
+                lines.append("  Quit Claude Desktop from the menu bar. Then verify:")
+            else:
+                lines.append("  Quit Claude Desktop fully (window and tray). Then verify:")
+            lines.append(f"    {check_command}")
         lines.append("")
 
     if snapshot.get("install_type") == "msix":
@@ -310,30 +343,7 @@ def main():
         appdata_claude_dir = os.path.join(state_abs, "appdata", "Claude")
         projects_dir = os.path.join(state_abs, "projects")
     else:
-        _sys = platform.system()
-        if _sys == "Darwin":
-            appdata_claude_dir = os.path.expanduser("~/Library/Application Support/Claude")
-            projects_dir = os.path.expanduser("~/.claude/projects")
-        elif _sys == "Linux":
-            appdata_claude_dir = os.path.expanduser("~/.config/Claude")
-            projects_dir = os.path.expanduser("~/.claude/projects")
-        else:
-            appdata_claude_dir = os.path.join(
-                os.environ.get("APPDATA", os.path.expanduser("~")), "Claude"
-            )
-            if not os.path.isdir(appdata_claude_dir):
-                _local = os.environ.get("LOCALAPPDATA", "")
-                _pkgs = os.path.join(_local, "Packages")
-                if os.path.isdir(_pkgs):
-                    for _pkg in sorted(os.listdir(_pkgs)):
-                        if _pkg.startswith("Claude_"):
-                            _cand = os.path.join(
-                                _pkgs, _pkg, "LocalCache", "Roaming", "Claude"
-                            )
-                            if os.path.isdir(_cand):
-                                appdata_claude_dir = _cand
-                                break
-            projects_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+        appdata_claude_dir, projects_dir = default_claude_paths()
 
     snapshot = build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=args.state is not None)
     diagnosis_id = make_diagnosis_id(snapshot)
@@ -364,7 +374,7 @@ def main():
             "tested_against": {
                 "claude_desktop": snapshot.get("desktop_version"),
                 "claude_code_cli": snapshot.get("cli_version"),
-                "windows": "11",
+                "platform": "fixture" if args.state else platform.system(),
             },
             "schema_probe": snapshot["schema_version"],
             "install_type": snapshot.get("install_type"),
@@ -385,7 +395,7 @@ def main():
             ],
             "audit_only_problems": [],
             "schema_mismatch": not schema_ok,
-            "snapshot": snapshot,
+            "snapshot": _redact_snapshot(snapshot),
         }
         print(json.dumps(output, indent=2))
     else:

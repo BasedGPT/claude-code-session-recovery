@@ -12,7 +12,7 @@ These tools fix real Claude Code bugs. Adopt them if the bug applies to you.
 
 ### `recover_deleted_branches_worktrees.py`
 
-**Problem it solves:** A worktree branch was deleted and the worktree folder is gone. `git worktree list` shows nothing, but session history for that worktree still exists in Desktop. If merge commits on `master` can reconstruct the branch tip, this tool recreates the branch and stubs the worktree.
+**Problem it solves:** A worktree branch was deleted and the worktree folder is gone. `git worktree list` shows nothing, but session history for that worktree still exists in Desktop. If merge commits on the repository's default branch can reconstruct the branch tip, this tool recreates the branch and stubs the worktree.
 
 Invoked via `diagnose.py`. Run `python tools/diagnose.py` first — it identifies whether your state matches this repair and provides the exact command.
 
@@ -61,7 +61,7 @@ These are the settled rules behind the lifecycle:
 1. Branches are never auto-deleted. Branches are bytes; loss is real.
 2. Anything shrunk goes to `.shrink-quarantine/`. Never auto-purged.
 3. Commit before wrap, wrap before shrink. The branch is the durable record.
-4. Done sessions merge to master at wrap. WIP sessions skip merge and stay materialised.
+4. Done sessions merge to the repository's default branch at wrap. WIP sessions skip merge and stay materialised.
 5. The shrink marker is a hint; branch state is the source of truth. Always re-verify before acting.
 6. Time is a sort signal, never a delete rule. Age does not imply abandonment.
 7. Destructive action requires a recovery remedy. Quarantine, never delete outright.
@@ -72,7 +72,7 @@ Runs once per session at close. Cannot shrink the worktree the session is runnin
 
 1. Commit everything worth keeping to the branch.
 2. Decide: done or WIP?
-3. If done: merge the branch to master (fast-forward or `--no-ff` as fits the history). Drop a `.shrink-when-safe` marker at `.claude/worktrees/<name>/`.
+3. If done: merge the branch to the repository's default branch (fast-forward or `--no-ff` as fits the history). Drop a `.shrink-when-safe` marker at `.claude/worktrees/<name>/`.
 4. If WIP: skip merge, skip marker, leave materialised.
 
 **Resume rule:** Any session that opens a worktree containing `.shrink-when-safe` removes the marker first, unless it is explicitly running the shrink processor. Continuing work after marking done is a first-class path.
@@ -93,8 +93,8 @@ Processes the shrink queue — materialised worktrees with a `.shrink-when-safe`
 
 | Mode | When to use |
 |---|---|
-| `--merged` (default) | Branch merged via `git merge` — SHAs match on master |
-| `--squash-merged` | Branch was squash-merged — content is on master but SHAs differ |
+| `--merged` (default) | Branch merged via `git merge` — SHAs match on the default branch |
+| `--squash-merged` | Branch was squash-merged — content is on the default branch but SHAs differ |
 | `--allow-unmerged` | Genuinely abandoning a branch with unique commits (commits stay reachable via the branch ref, which is never deleted) |
 
 **Manifest:** A JSON manifest is written to the quarantine target before any move, then updated after each phase. On failure at any phase, the tool stops and leaves the manifest in its current state. `--resume <manifest>` picks up at the last idempotent step.
@@ -221,7 +221,7 @@ Re-run `worktree_shrink.py --resume <manifest>` to pick up at the last completed
 
 The shrink tool does not identify lock holders. It refuses cleanly when a lock is detected, reporting that the worktree is locked and suggesting what might be holding it (Desktop window, terminal, IDE, cloud sync shell extension).
 
-The Desktop tasklist check is a UX gate, not a safety primitive. Its purpose is to surface the common case (session window still open) with a clear message. The no-op rename test is the actual safety check — it catches every kind of lock-holder regardless of source.
+The Desktop process check is a UX gate, not a safety primitive. Its purpose is to surface the common case (session window still open) with a clear message. The no-op rename test is the actual safety check — it catches every kind of lock-holder regardless of source.
 
 ---
 
@@ -231,4 +231,4 @@ A task can span multiple sessions. The branch accumulates commits across session
 
 - Session 1: commit work, wrap as WIP (skip merge, skip marker), exit. Worktree stays materialised.
 - Session 2: resume in the same worktree. More commits. Wrap as WIP again.
-- Session N (final): work complete, wrap as done (merge to master, drop marker). A future shrink run empties the folder.
+- Session N (final): work complete, wrap as done (merge to the default branch, drop marker). A future shrink run empties the folder.

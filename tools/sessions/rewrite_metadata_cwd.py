@@ -11,7 +11,7 @@ were already recorded against it. Desktop history entries still show the old
 cwd and will not resume correctly. This script patches the stored paths so the
 Desktop history links to the correct location.
 
-Safety: refuses to run in apply mode if claude.exe is detected, because Desktop
+Safety: refuses to run in apply mode if Claude Desktop is detected, because Desktop
 holds metadata in memory and will silently overwrite disk changes on its next
 periodic flush (typically within a few minutes of Desktop being open).
 
@@ -23,10 +23,11 @@ Files written:
     (only with --apply; cwd-related fields rewritten in-place)
 
 Backup created at:
-  - ./cwd-rewrite-backup/<original-filename>.json  (alongside this script)
+  - ./cwd-rewrite-backup/<account-uuid>/<org-uuid>/<original-filename>.json
+    (alongside this script; account/org directories prevent filename collisions)
 
-Rollback command:
-  - copy /Y cwd-rewrite-backup\\*.json "%APPDATA%\\Claude\\claude-code-sessions\\<account-uuid>\\<org-uuid>\\"
+Rollback:
+  - restore each file from the backup tree to its matching account/org directory
 
 Usage:
     # Dry-run: show what would change
@@ -39,7 +40,6 @@ import argparse
 import glob
 import json
 import os
-import platform
 import sys
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -49,11 +49,12 @@ if hasattr(sys.stdout, "reconfigure"):
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import find_metadata_directories
+    from session_state import default_claude_appdata_dir, find_metadata_directories
     from mutator_safety import (
         current_snapshot_and_diagnosis_id,
         desktop_process_running as _desktop_running,
-        diagnosis_mode, resolve_state_paths, verified_backup, write_json_in_place,
+        diagnosis_mode, metadata_backup_path, resolve_state_paths,
+        verified_backup, write_json_in_place,
     )
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
@@ -62,17 +63,7 @@ except ImportError as exc:
 
 # --- Configuration ---
 
-def _default_appdata_claude_dir():
-    """Return the platform-appropriate Claude app-data directory."""
-    _sys = platform.system()
-    if _sys == "Darwin":
-        return os.path.expanduser("~/Library/Application Support/Claude")
-    if _sys == "Linux":
-        return os.path.expanduser("~/.config/Claude")
-    return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude")
-
-
-APPDATA_CLAUDE_DIR = _default_appdata_claude_dir()
+APPDATA_CLAUDE_DIR = default_claude_appdata_dir()
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKUP_DIR = os.path.join(TOOL_DIR, "cwd-rewrite-backup")
@@ -236,9 +227,11 @@ def main():
 
     # Desktop running check (apply mode only)
     if args.apply and not args.state and _desktop_running():
-        print("REFUSED: claude.exe is running.")
-        print("Quit Claude Desktop fully (window + tray icon), verify with:")
-        print("  tasklist /FI \"IMAGENAME eq claude.exe\"")
+        from platform_support import desktop_process_check_command
+
+        print("REFUSED: Claude Desktop is running.")
+        print("Quit Claude Desktop fully, then verify with:")
+        print("  {}".format(desktop_process_check_command()))
         print("Then re-run with --apply.")
         sys.exit(3)
 
@@ -279,9 +272,15 @@ def main():
             print("    {}: old-path -> new-path".format(field))
 
         if args.apply:
-            verified_backup(path, os.path.join(BACKUP_DIR, fname))
+            backup_path = metadata_backup_path(path, appdata_claude_dir, BACKUP_DIR)
+            verified_backup(
+                path,
+                backup_path,
+            )
             write_json_in_place(path, updated)
-            print("    WRITTEN (backup at cwd-rewrite-backup/{})".format(fname))
+            print("    WRITTEN (backup at {})".format(
+                os.path.relpath(backup_path, TOOL_DIR).replace(os.sep, "/")
+            ))
         else:
             print("    [dry-run]")
         print()
@@ -290,10 +289,8 @@ def main():
     if args.apply:
         print("Rewritten: {}".format(changed_count))
         print("Backups:   cwd-rewrite-backup/")
-        print()
-        print("To restore: copy /Y cwd-rewrite-backup\\*.json \"{}\"".format(
-            os.path.dirname(targets[0][0]) if targets else "<meta-dir>"
-        ))
+        print("Restore each backup to its matching account/org metadata directory;")
+        print("the backup tree preserves those relative paths.")
     else:
         print("Total that would be updated: {}".format(changed_count))
         print("Re-run with --apply to execute. Desktop must be fully quit first.")

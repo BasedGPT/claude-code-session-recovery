@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import platform
+import plistlib
 import re
 import subprocess
 
@@ -17,6 +18,12 @@ from transcript_files import (
     build_transcript_index,
     count_assistant_records,
     iter_transcript_paths,
+)
+from platform_support import (
+    default_claude_appdata_dir,
+    default_claude_paths,
+    desktop_process_check_command,
+    desktop_process_running,
 )
 
 
@@ -90,6 +97,23 @@ def _detect_mapped_drive_slugs(projects_dir):
 
 
 def _detect_desktop_version():
+    if platform.system() == "Darwin":
+        app_paths = (
+            "/Applications/Claude.app",
+            os.path.expanduser("~/Applications/Claude.app"),
+        )
+        for app_path in app_paths:
+            info_path = os.path.join(app_path, "Contents", "Info.plist")
+            try:
+                with open(info_path, "rb") as handle:
+                    info = plistlib.load(handle)
+            except (OSError, plistlib.InvalidFileException, ValueError):
+                continue
+            version = info.get("CFBundleShortVersionString") or info.get("CFBundleVersion")
+            if version:
+                return str(version)
+        return None
+
     local_app = os.environ.get("LOCALAPPDATA", "")
     anthropic_dir = os.path.join(local_app, "AnthropicClaude")
     if not os.path.isdir(anthropic_dir):
@@ -119,55 +143,23 @@ def _detect_cli_version():
 
 
 def _detect_desktop_running():
-    """Return whether a desktop-installed, rather than CLI, Claude is running."""
-    try:
-        result = subprocess.run(
-            ["wmic", "process", "where", "name='claude.exe'", "get",
-             "ExecutablePath", "/format:csv"],
-            capture_output=True, text=True, timeout=10, check=False,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                if "anthropicclaude" in line.lower() and "claude.exe" in line.lower():
-                    return True
-            return False
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-Process claude -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }"],
-            capture_output=True, text=True, timeout=10, check=False,
-        )
-        if result.returncode == 0:
-            return any("anthropicclaude" in line.lower() for line in result.stdout.splitlines())
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-
-    try:
-        result = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq claude.exe"],
-            capture_output=True, text=True, timeout=10, check=False,
-        )
-        return "claude.exe" in result.stdout.lower()
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+    """Return whether Claude Desktop is running on the current platform."""
+    return desktop_process_running()
 
 
 def _detect_install_type():
     """Return ``(install_type, msix_real_path)`` for the live Desktop install."""
     if platform.system() != "Windows":
         return "not_windows", None
-    claude_appdata = os.path.join(os.environ.get("APPDATA", ""), "Claude")
+    claude_appdata = default_claude_appdata_dir()
     if not os.path.exists(claude_appdata):
         return "unknown", None
     try:
         real_path = os.path.realpath(claude_appdata)
+        real_lower = real_path.lower()
+        if "packages" in real_lower and "claude_" in real_lower:
+            return "msix", real_path
         if os.path.normcase(real_path) != os.path.normcase(claude_appdata):
-            real_lower = real_path.lower()
-            if "packages" in real_lower and "claude_" in real_lower:
-                return "msix", real_path
             return "unknown", None
     except OSError:
         pass
@@ -175,7 +167,39 @@ def _detect_install_type():
 
 
 def _detect_running_inside_desktop():
-    """Return whether the current process is a descendant of ``claude.exe``."""
+    """Return whether the current process is a descendant of Claude Desktop."""
+    if platform.system() == "Darwin":
+        try:
+            result = subprocess.run(
+                ["ps", "-axo", "pid=,ppid=,comm=,args="],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            processes = {}
+            for line in result.stdout.splitlines():
+                parts = line.strip().split(None, 3)
+                if len(parts) < 3:
+                    continue
+                try:
+                    processes[int(parts[0])] = (int(parts[1]), " ".join(parts[2:]).lower())
+                except (ValueError, IndexError):
+                    continue
+            current = os.getpid()
+            visited = set()
+            while current and current not in visited:
+                visited.add(current)
+                if current not in processes:
+                    break
+                parent, command = processes[current]
+                if (
+                    "/claude.app/contents/macos/claude" in command
+                    or os.path.basename(command.split(None, 1)[0]) == "claude"
+                ):
+                    return True
+                current = parent
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return False
+
     try:
         result = subprocess.run(
             ["wmic", "process", "get", "ProcessId,ParentProcessId,Name", "/format:csv"],

@@ -54,7 +54,7 @@ Executable scripts remain the command-line and reporting adapters. Keep user-fac
 
 **Tier 1 — always:** Run `diagnose.py` first. Read its output before suggesting anything. It is read-only and safe at any time.
 
-**Tier 2 — ask before running:** Before suggesting any mutator command, confirm Claude Desktop is fully quit (`tasklist /FI "IMAGENAME eq claude.exe"` returns no results) and the user has reviewed the dry-run output.
+**Tier 2 — ask before running:** Before suggesting any mutator command, confirm Claude Desktop is fully quit using the platform-specific process-check command printed by `diagnose.py`, and the user has reviewed the dry-run output.
 
 **Tier 3 — never:** Do not run any mutator while Claude Desktop is open. Desktop holds metadata files in memory and will overwrite repairs on its next flush.
 
@@ -62,7 +62,8 @@ Executable scripts remain the command-line and reporting adapters. Keep user-fac
 
 ## 4. Tech stack
 
-- Python 3.11+, standard library only (stdlib `zoneinfo` used by some tools; no pip installs required)
+- Python 3.11+, standard library runtime (stdlib `zoneinfo` used by some tools)
+- Test dependency: `requirements-dev.txt`
 - PowerShell 5.1+ for `worktree_inspector.ps1`
 - Windows 11 and macOS; individual tools document platform-specific limits
 - No external APIs, no network calls, no telemetry
@@ -73,8 +74,8 @@ Executable scripts remain the command-line and reporting adapters. Keep user-fac
 
 | What | Path |
 |---|---|
-| Desktop session metadata | `%APPDATA%\Claude\claude-code-sessions\<account-uuid>\<org-uuid>\local_*.json` |
-| CLI transcripts | `%USERPROFILE%\.claude\projects\<slug>\*.jsonl` |
+| Desktop session metadata | Windows `%APPDATA%\Claude\claude-code-sessions\...`; macOS `~/Library/Application Support/Claude/claude-code-sessions/...` |
+| CLI transcripts | Windows/macOS `~/.claude/projects/<slug>/*.jsonl` |
 | Desktop install | `%LOCALAPPDATA%\AnthropicClaude\app-<version>\` |
 | Backup and staging dirs | Script-specific directories documented by each mutator's dry-run output |
 | Fixtures | `fixtures/<NN>-<name>/state/` |

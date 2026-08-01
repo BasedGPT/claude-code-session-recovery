@@ -46,6 +46,7 @@ _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
     from session_state import default_claude_paths, find_metadata_directories
+    from platform_support import desktop_process_check_command, desktop_process_running
     from mutator_safety import (
         atomic_copy_file, atomic_write_json, current_snapshot_and_diagnosis_id,
         diagnosis_mode, resolve_state_paths,
@@ -68,6 +69,17 @@ OUT_DIR = os.path.join(TOOL_DIR, "synth-out")
 # Gate 5 -- Known-do-not-run conditions
 # ---------------------------------------------------------------------------
 
+def _msix_do_not_run_message(snapshot):
+    real = snapshot.get("msix_real_path")
+    path_note = " Your data is at: {}".format(real) if real else ""
+    return (
+        "Microsoft Store (MSIX) install detected."
+        " synth_session_metadata.py is not supported for MSIX because Desktop's"
+        " internal session index takes precedence over externally-written metadata."
+        "{} Use 'claude --resume' in the project directory to re-enter a session."
+        " Run diagnose.py to see the full state report."
+    ).format(path_note)
+
 KNOWN_DO_NOT_RUN = [
     (
         lambda s: s["jsonl_orphan_count"] == 0,
@@ -87,6 +99,10 @@ KNOWN_DO_NOT_RUN = [
             "State schema not recognised. Run diagnose.py and report "
             "the unsupported state to the maintainer."
         ),
+    ),
+    (
+        lambda s: s.get("install_type") == "msix",
+        _msix_do_not_run_message,
     ),
 ]
 
@@ -230,10 +246,19 @@ def main():
     for predicate, message in KNOWN_DO_NOT_RUN:
         try:
             if predicate(snapshot):
-                print("REFUSED: " + message)
+                msg = message(snapshot) if callable(message) else message
+                print("REFUSED: " + msg)
                 sys.exit(3)
         except Exception:
             pass
+
+    # Re-check immediately before any live-mode staging or AppData write.
+    if args.apply and args.state is None and desktop_process_running():
+        print("REFUSED: Claude Desktop is running.")
+        print("Quit Claude Desktop fully, then verify with:")
+        print("  {}".format(desktop_process_check_command()))
+        print("Then re-run with --apply.")
+        sys.exit(3)
 
     orphans = _find_orphan_jsonls(appdata_claude_dir, projects_dir)
     meta_dir = _find_meta_dir(appdata_claude_dir)
@@ -288,6 +313,9 @@ def main():
                 print("  REFUSED: {} already exists -- skipping".format(apply_path))
                 skipped += 1
                 continue
+            print("  APPLY PLAN -> {}".format(apply_path))
+            print("        staged source: {}".format(out_path))
+            print("        rollback: delete {}".format(apply_path))
             try:
                 atomic_copy_file(out_path, apply_path)
                 print("  APPLIED -> {}".format(apply_path))

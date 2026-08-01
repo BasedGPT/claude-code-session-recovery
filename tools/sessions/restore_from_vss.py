@@ -55,7 +55,9 @@ except (AttributeError, ValueError):
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOL_DIR)
+sys.path.insert(0, os.path.dirname(TOOL_DIR))
 from lock_utils import acquire_lock, release_lock  # noqa: E402
+from platform_support import desktop_process_check_command, desktop_process_running  # noqa: E402
 
 # --- Configuration ---
 # Where JSONL transcripts live. Override with --projects-dir for testing.
@@ -108,15 +110,8 @@ def _check_vss_available():
 
 
 def _desktop_running():
-    """Return True if Claude Desktop is currently present in tasklist."""
-    try:
-        result = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq claude.exe", "/NH"],
-            capture_output=True, text=True, timeout=10,
-        )
-        return "claude.exe" in result.stdout.lower()
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
+    """Return whether Claude Desktop is running, failing closed if unknown."""
+    return desktop_process_running()
 
 
 # ---------------------------------------------------------------------------
@@ -672,7 +667,7 @@ def main():
         print("restoring. Desktop holds session state in memory and will overwrite restored",
               file=sys.stderr)
         print("files on its next flush.", file=sys.stderr)
-        print('  Verify with: tasklist /FI "IMAGENAME eq claude.exe"', file=sys.stderr)
+        print("  Verify with: {}".format(desktop_process_check_command()), file=sys.stderr)
         sys.exit(1)
 
     # Apply: copy files, preserving mtime via shutil.copy2.
@@ -705,6 +700,8 @@ def main():
 
             if current_live_exists:
                 backup_path = os.path.join(BACKUP_DIR, c["rel_path"])
+                print("  BACKUP -> {}".format(backup_path))
+                print("  ROLLBACK: restore {} -> {}".format(backup_path, live_path))
                 os.makedirs(os.path.dirname(backup_path), exist_ok=True)
                 shutil.copy2(live_path, backup_path)
                 if (
@@ -712,6 +709,9 @@ def main():
                     or not _first_bytes_match(live_path, backup_path, current_live_size)
                 ):
                     raise OSError("backup verification failed")
+            else:
+                print("  NEW FILE -> {}".format(live_path))
+                print("  ROLLBACK: delete {}".format(live_path))
 
             os.makedirs(os.path.dirname(live_path), exist_ok=True)
             shutil.copy2(shadow_path, live_path)

@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
+    from platform_support import desktop_process_check_command, desktop_process_running
     from session_state import default_claude_appdata_dir, find_metadata_directories
     from mutator_safety import (
         current_snapshot_and_diagnosis_id, diagnosis_mode, resolve_state_paths,
@@ -235,10 +236,20 @@ def main():
     for predicate, message in KNOWN_DO_NOT_RUN:
         try:
             if predicate(snapshot):
-                print("REFUSED: " + message)
+                msg = message(snapshot) if callable(message) else message
+                print("REFUSED: " + msg)
                 sys.exit(3)
         except Exception:
             pass
+
+    # Re-check immediately before live-mode deletion. Fixture applies are
+    # isolated from the user's Desktop process and intentionally skip this.
+    if args.apply and args.state is None and desktop_process_running():
+        print("REFUSED: Claude Desktop is running.")
+        print("Quit Claude Desktop fully, then verify with:")
+        print("  {}".format(desktop_process_check_command()))
+        print("Then re-run with --apply.")
+        sys.exit(3)
 
     # Index state
     all_rows = index_metadata(appdata_claude_dir)
@@ -288,9 +299,12 @@ def main():
             print()
 
             if args.apply:
+                backup_path = metadata_backup_path(path, appdata_claude_dir, BACKUP_DIR)
+                print("          backup: {}".format(backup_path))
+                print("          rollback: restore {} -> {}".format(backup_path, path))
                 verified_backup(
                     path,
-                    metadata_backup_path(path, appdata_claude_dir, BACKUP_DIR),
+                    backup_path,
                 )
                 os.remove(path)
 

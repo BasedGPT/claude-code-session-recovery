@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 TOOLS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools")
@@ -47,6 +48,20 @@ class LockUtilsTests(unittest.TestCase):
 
             with self.assertRaises(SystemExit):
                 lock_utils.acquire_lock(lock_path, "replacement")
+
+            self.assertTrue(os.path.isdir(lock_path))
+            lock_utils._remove_lock_tree(lock_path)
+
+    def test_unverifiable_owner_is_not_reclaimed(self):
+        with tempfile.TemporaryDirectory() as root:
+            lock_path = os.path.join(root, "job.lock")
+            os.makedirs(lock_path)
+            with open(os.path.join(lock_path, "pid"), "w", encoding="utf-8") as handle:
+                handle.write("12345")
+
+            with mock.patch.object(lock_utils, "_pid_running", return_value=None):
+                with self.assertRaises(SystemExit):
+                    lock_utils.acquire_lock(lock_path, "replacement")
 
             self.assertTrue(os.path.isdir(lock_path))
             lock_utils._remove_lock_tree(lock_path)

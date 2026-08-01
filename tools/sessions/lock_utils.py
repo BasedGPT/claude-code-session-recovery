@@ -25,7 +25,7 @@ import uuid
 
 
 def _pid_running(pid):
-    """Return True if the given PID is still running."""
+    """Return True/False, or None when the PID cannot be verified."""
     if not isinstance(pid, int) or pid <= 0:
         return False
     if os.name != "nt":
@@ -40,14 +40,23 @@ def _pid_running(pid):
         return True
     try:
         import ctypes
-        PROCESS_QUERY_INFORMATION = 0x0400
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        ERROR_INVALID_PARAMETER = 87
+        ERROR_NOT_FOUND = 1168
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
         if handle == 0:
-            return False
+            error = ctypes.windll.kernel32.GetLastError()
+            if error in (ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND):
+                return False
+            # Access-denied and other failures do not prove that the owner
+            # exited. Reclaiming in that case could allow concurrent writers.
+            return None
         ctypes.windll.kernel32.CloseHandle(handle)
         return True
     except Exception:
-        return False  # can't determine -- treat as not running
+        return None  # can't determine -- fail closed
 
 
 def _pid_path(lock_file):
@@ -93,12 +102,13 @@ def acquire_lock(lock_file, script_name):
             except FileNotFoundError:
                 pass
             locked_pid = _read_pid(lock_file)
-            if locked_pid and _pid_running(locked_pid):
+            owner_status = _pid_running(locked_pid) if locked_pid else None
+            if owner_status is True:
                 print("[WARN] {}: lock exists -- PID {} is still running. Exiting.".format(
                     script_name, locked_pid))
                 sys.exit(0)
 
-            if locked_pid is None:
+            if locked_pid is None or owner_status is None:
                 print("[WARN] {}: lock exists but its owner cannot be verified. Exiting.".format(
                     script_name))
                 sys.exit(0)

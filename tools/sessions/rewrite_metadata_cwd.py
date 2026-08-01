@@ -273,6 +273,8 @@ def main():
 
         if args.apply:
             backup_path = metadata_backup_path(path, appdata_claude_dir, BACKUP_DIR)
+            print("    BACKUP -> {}".format(backup_path))
+            print("    ROLLBACK: restore {} -> {}".format(backup_path, path))
             verified_backup(
                 path,
                 backup_path,

@@ -54,6 +54,7 @@ from datetime import datetime
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
+    from platform_support import desktop_process_check_command, desktop_process_running
     from session_state import default_claude_paths, find_metadata_directories, slug_encode
     from mutator_safety import (
         atomic_write_json, current_snapshot_and_diagnosis_id, diagnosis_mode,
@@ -256,6 +257,15 @@ def main():
         except Exception:
             pass
 
+    # Re-check immediately before live-mode mutation. Fixture applies are
+    # isolated from the user's Desktop process and intentionally skip this.
+    if args.apply and args.state is None and desktop_process_running():
+        print("REFUSED: Claude Desktop is running.")
+        print("Quit Claude Desktop fully, then verify with:")
+        print("  {}".format(desktop_process_check_command()))
+        print("Then re-run with --apply.")
+        sys.exit(3)
+
     mismatches = _find_mismatches(appdata_claude_dir, projects_dir)
 
     print("Sessions with cwd slug mismatch: {}".format(len(mismatches)))
@@ -309,6 +319,8 @@ def main():
         os.makedirs(backup_dir, exist_ok=True)
         backup_path = metadata_backup_path(meta_path, appdata_claude_dir, backup_dir)
         try:
+            print("  BACKUP -> {}".format(backup_path))
+            print("  ROLLBACK: restore {} -> {}".format(backup_path, meta_path))
             verified_backup(meta_path, backup_path)
         except OSError as e:
             print("  FAIL {}: backup failed: {}".format(meta_name, e))

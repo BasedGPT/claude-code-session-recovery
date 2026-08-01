@@ -44,9 +44,11 @@ overwrite `dry-run.txt` if the exit status changes or the dry run modifies its
 state copy. Review an exit-status change as a behaviour change, then update the
 contract deliberately if that change is accepted.
 
-Shared modules under `tools/` own reusable implementation. Executable scripts
-own their CLI interface, reporting, paths, and repair policy. Preserve those
-observable contracts when moving code across the seam.
+Shared modules under `tools/` own reusable implementation, including
+platform-specific facts and default path resolution. Executable scripts own
+their CLI interface, reporting, and repair policy, and must report the paths
+returned by those shared resolvers. Preserve those observable contracts when
+moving code across the seam.
 
 The supported desktop platforms are Windows and macOS. Linux paths are kept
 explicit where useful, but Linux is not a release support target.

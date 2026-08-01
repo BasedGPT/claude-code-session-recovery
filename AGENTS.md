@@ -46,7 +46,11 @@ Shared implementation modules keep that behaviour consistent:
 | `tools/worktrees/worktree_lifecycle.py` | Worktree marker, sentinel, and quiet-stub mechanics |
 | `tests/fixture_scenarios.py` | Isolated fixture execution shared by verification and golden regeneration |
 
-Executable scripts remain the command-line and reporting adapters. Keep user-facing wording, exit codes, paths, and safety policy local to those scripts.
+Executable scripts remain the command-line and reporting adapters. Keep
+user-facing wording, exit codes, and safety policy local to those scripts.
+Shared modules may own reusable platform facts and default path resolution so
+Windows and macOS adapters cannot silently drift; the executable still reports
+the resolved paths and retains the repair policy.
 
 ---
 

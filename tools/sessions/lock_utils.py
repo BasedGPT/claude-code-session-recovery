@@ -18,6 +18,7 @@ Usage:
     atexit.register(release_lock, LOCK_FILE)   # clean up on any normal exit
 """
 
+import errno
 import os
 import shutil
 import sys
@@ -97,47 +98,61 @@ def acquire_lock(lock_file, script_name):
                 handle.write(str(os.getpid()))
             os.rename(temporary_lock, lock_file)
         except FileExistsError:
-            try:
-                _remove_lock_tree(temporary_lock)
-            except FileNotFoundError:
-                pass
-            locked_pid = _read_pid(lock_file)
-            owner_status = _pid_running(locked_pid) if locked_pid else None
-            if owner_status is True:
-                print("[WARN] {}: lock exists -- PID {} is still running. Exiting.".format(
-                    script_name, locked_pid))
-                sys.exit(0)
+            # Windows reports an existing destination as FileExistsError.
+            # Keep the collision path below for the existing-lock check.
+            pass
+        except OSError as exc:
+            # On macOS, replacing a non-empty directory with rename(2) raises
+            # ENOTEMPTY rather than FileExistsError.  It is the same
+            # destination-lock collision and must not escape as a test/runtime
+            # failure.  Preserve fail-fast behaviour for unrelated errors.
+            if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                try:
+                    _remove_lock_tree(temporary_lock)
+                except FileNotFoundError:
+                    pass
+                raise
 
-            if locked_pid is None or owner_status is None:
-                print("[WARN] {}: lock exists but its owner cannot be verified. Exiting.".format(
-                    script_name))
-                sys.exit(0)
+        else:
+            return
 
-            print("[WARN] {}: stale lock (PID {} is gone) -- reclaiming and continuing.".format(
-                script_name, locked_pid))
-            stale_path = "{}.stale.{}".format(lock_file, uuid.uuid4().hex)
-            try:
-                os.rename(lock_file, stale_path)
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                print("[WARN] {}: could not reclaim stale lock: {}. Exiting.".format(
-                    script_name, exc))
-                sys.exit(0)
-            try:
-                _remove_lock_tree(stale_path)
-            except OSError as exc:
-                print("[WARN] {}: could not remove stale lock: {}. Exiting.".format(
-                    script_name, exc))
-                sys.exit(0)
+        try:
+            _remove_lock_tree(temporary_lock)
+        except FileNotFoundError:
+            pass
+        if not os.path.exists(lock_file):
             continue
-        except OSError:
-            try:
-                _remove_lock_tree(temporary_lock)
-            except FileNotFoundError:
-                pass
-            raise
-        return
+
+        locked_pid = _read_pid(lock_file)
+        owner_status = _pid_running(locked_pid) if locked_pid else None
+        if owner_status is True:
+            print("[WARN] {}: lock exists -- PID {} is still running. Exiting.".format(
+                script_name, locked_pid))
+            sys.exit(0)
+
+        if locked_pid is None or owner_status is None:
+            print("[WARN] {}: lock exists but its owner cannot be verified. Exiting.".format(
+                script_name))
+            sys.exit(0)
+
+        print("[WARN] {}: stale lock (PID {} is gone) -- reclaiming and continuing.".format(
+            script_name, locked_pid))
+        stale_path = "{}.stale.{}".format(lock_file, uuid.uuid4().hex)
+        try:
+            os.rename(lock_file, stale_path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            print("[WARN] {}: could not reclaim stale lock: {}. Exiting.".format(
+                script_name, exc))
+            sys.exit(0)
+        try:
+            _remove_lock_tree(stale_path)
+        except OSError as exc:
+            print("[WARN] {}: could not remove stale lock: {}. Exiting.".format(
+                script_name, exc))
+            sys.exit(0)
+        continue
 
 
 def release_lock(lock_file):

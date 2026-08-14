@@ -1,5 +1,6 @@
 """Regression tests for the scheduled-tool lock protocol."""
 
+import errno
 import os
 import sys
 import tempfile
@@ -27,6 +28,27 @@ class LockUtilsTests(unittest.TestCase):
 
             lock_utils.release_lock(lock_path)
             self.assertFalse(os.path.exists(lock_path))
+
+    def test_nonempty_directory_collision_is_treated_as_existing_lock(self):
+        with tempfile.TemporaryDirectory() as root:
+            lock_path = os.path.join(root, "job.lock")
+            lock_utils.acquire_lock(lock_path, "first")
+
+            original_rename = lock_utils.os.rename
+
+            def raise_directory_collision(source, destination):
+                if destination == lock_path:
+                    raise OSError(errno.ENOTEMPTY, "Directory not empty")
+                return original_rename(source, destination)
+
+            with mock.patch.object(
+                lock_utils.os, "rename", side_effect=raise_directory_collision
+            ):
+                with self.assertRaises(SystemExit):
+                    lock_utils.acquire_lock(lock_path, "second")
+
+            self.assertTrue(os.path.isdir(lock_path))
+            lock_utils.release_lock(lock_path)
 
     def test_stale_lock_directory_is_reclaimed(self):
         with tempfile.TemporaryDirectory() as root:

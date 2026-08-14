@@ -29,7 +29,10 @@ class SessionStatePortabilityTests(unittest.TestCase):
                 install_type, real_path = session_state._detect_install_type()
 
             self.assertEqual(install_type, "msix")
-            self.assertEqual(os.path.normcase(real_path), os.path.normcase(package_data))
+            self.assertEqual(
+                os.path.normcase(os.path.realpath(real_path)),
+                os.path.normcase(os.path.realpath(package_data)),
+            )
 
 
 if __name__ == "__main__":

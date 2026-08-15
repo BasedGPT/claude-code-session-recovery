@@ -1,3 +1,5 @@
+
+
 # Claude Code Desktop Session Recovery & Repair Tools
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
@@ -109,7 +111,7 @@ The write-bearing scripts (`repair_session_metadata.py`, `synth_session_metadata
 
 If your workspace is on a mapped Windows drive (`N:\`, `Z:\`, etc.), the VS Code extension's session history sidebar may show no past sessions even though the sessions exist on disk and `claude --resume` works fine in the integrated terminal.
 
-The CLI writes project slugs from the literal drive-letter path (`N:\path\to\project` → `n--path-to-project`). The VS Code extension resolves drive letters to UNC paths via Node's `fs.realpath()` (`N:\` → `\\server\share\`) and derives a different slug from that UNC form. The two encoding paths disagree, so the extension searches under a project directory that doesn't exist.
+The CLI writes project slugs from the literal drive-letter path (`N:\path\to\project` → `N--path-to-project`). The VS Code extension resolves drive letters to UNC paths via Node's `fs.realpath()` (`N:\` → `\\server\share\`) and derives a different slug from that UNC form. The two encoding paths disagree, so the extension searches under a project directory that doesn't exist.
 
 `diagnose.py` detects this and prints a NOTE when affected project directories are found. The Desktop app and `claude --resume` / `--continue` are not affected.
 

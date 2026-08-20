@@ -23,6 +23,11 @@ Files written:
   - <BACKUPS_ROOT>/transcript-index/YYYY-MM-DD/transcripts.db  (if configured)
   - <BACKUPS_ROOT>/backup_log/YYYY-MM-DD.log
 
+Zip publication:
+  - manifest.json is a reserved archive control path.
+  - completed temp zips are CRC-, schema-, size-, and SHA-256-verified.
+  - zero metadata pairs or publication failure leaves a prior final untouched.
+
 Task Scheduler setup (run daily):
   Program  : py
   Arguments: -3 "<absolute-path-to-this-script>"
@@ -54,6 +59,8 @@ Restoring from backup — read this first:
 import argparse
 import atexit
 import ctypes
+import hashlib
+import json
 import os
 import platform
 import re
@@ -99,6 +106,13 @@ TZ = ZoneInfo("Australia/Melbourne")
 
 # How many daily snapshots to keep before pruning.
 KEEP_DAYS = 30
+
+# Versioned manifest format for newly-created backup zips.  This archive
+# evidence is intentionally independent of the diagnosis snapshot.
+BACKUP_LAYOUT_VERSION = 2
+HASH_CHUNK_SIZE = 1024 * 1024
+MANIFEST_ARCHIVE_PATH = "manifest.json"
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # --- End configuration ---
 
@@ -161,63 +175,299 @@ def _recycle(path):
         raise OSError("SHFileOperationW failed (code {}) for {}".format(rc, path))
 
 
-def _discover_meta_dir():
-    """Return the single account/org metadata dir; fail loudly if ambiguous."""
+def _discover_meta_pairs():
+    """Return every account/org metadata pair in deterministic order.
+
+    Logout/login can leave more than one pair under
+    ``claude-code-sessions``. A backup must preserve all of them rather than
+    treating that state as an error. The filesystem path is retained for the
+    caller; it is not written to the portable manifest.
+    """
     if not os.path.isdir(SESSIONS_BASE):
         raise RuntimeError("claude-code-sessions dir not found: {}".format(SESSIONS_BASE))
-    accounts = [e for e in os.listdir(SESSIONS_BASE)
-                if os.path.isdir(os.path.join(SESSIONS_BASE, e))]
-    if len(accounts) != 1:
+
+    pairs = []
+    for account_uuid in sorted(os.listdir(SESSIONS_BASE)):
+        account_path = os.path.join(SESSIONS_BASE, account_uuid)
+        if not os.path.isdir(account_path):
+            continue
+        for organisation_uuid in sorted(os.listdir(account_path)):
+            metadata_dir = os.path.join(account_path, organisation_uuid)
+            if not os.path.isdir(metadata_dir):
+                continue
+            pairs.append({
+                "account_uuid": account_uuid,
+                "organisation_uuid": organisation_uuid,
+                "path": metadata_dir,
+            })
+    return pairs
+
+
+def _discover_meta_dir():
+    """Compatibility helper for callers that require exactly one pair."""
+    pairs = _discover_meta_pairs()
+    if len(pairs) != 1:
         raise RuntimeError(
-            "Expected 1 account dir under {}, found {}: {}".format(
-                SESSIONS_BASE, len(accounts), accounts))
-    acct_path = os.path.join(SESSIONS_BASE, accounts[0])
-    orgs = [e for e in os.listdir(acct_path)
-            if os.path.isdir(os.path.join(acct_path, e))]
-    if len(orgs) != 1:
-        raise RuntimeError(
-            "Expected 1 org dir under {}, found {}: {}".format(
-                acct_path, len(orgs), orgs))
-    return os.path.join(acct_path, orgs[0])
+            "Expected exactly one account/org pair under {}, found {}".format(
+                SESSIONS_BASE, len(pairs)
+            )
+        )
+    return pairs[0]["path"]
+
+
+def _iter_source_files(src_dir):
+    """Yield source files in stable order for hashing and archive creation."""
+    for root, dirs, files in os.walk(src_dir):
+        dirs.sort()
+        for fname in sorted(files):
+            full = os.path.join(root, fname)
+            if os.path.isfile(full):
+                yield full
 
 
 def _dir_stats(src_dir):
     """Return (total_bytes, file_count) by walking src_dir."""
     total, count = 0, 0
-    for root, _, files in os.walk(src_dir):
-        for f in files:
-            total += os.path.getsize(os.path.join(root, f))
-            count += 1
+    for full in _iter_source_files(src_dir):
+        total += os.path.getsize(full)
+        count += 1
     return total, count
 
 
-def _backup_zip(src_dir, dest_zip, log, dry_run):
-    """Zip src_dir into dest_zip (atomic write via .tmp). Returns source bytes."""
+def _manifest_pairs(src_dir, pairs):
+    """Return portable manifest records for discovered metadata pairs."""
+    records = []
+    for pair in pairs or []:
+        archive_root = os.path.relpath(pair["path"], src_dir).replace("\\", "/")
+        if archive_root == "." or archive_root.startswith("../"):
+            raise RuntimeError("metadata pair is outside backup root: {}".format(pair["path"]))
+        records.append({
+            "account_uuid": pair["account_uuid"],
+            "organisation_uuid": pair["organisation_uuid"],
+            "archive_root": archive_root,
+            "file_count": 0,
+            "total_bytes": 0,
+        })
+    return records
+
+
+def _write_hashed_zip_entry(zip_file, source_path, archive_path):
+    """Copy one file into a zip while returning its byte count and SHA-256."""
+    info = zipfile.ZipInfo.from_file(source_path, archive_path)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    digest = hashlib.sha256()
+    byte_count = 0
+    with open(source_path, "rb") as source, zip_file.open(info, "w") as target:
+        while True:
+            chunk = source.read(HASH_CHUNK_SIZE)
+            if not chunk:
+                break
+            target.write(chunk)
+            digest.update(chunk)
+            byte_count += len(chunk)
+    return byte_count, digest.hexdigest()
+
+
+def _verify_backup_zip(archive_path):
+    """Validate CRCs, manifest schema, entries, sizes, and SHA-256 hashes."""
+    try:
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            names = archive.namelist()
+            if len(names) != len(set(names)):
+                raise RuntimeError("duplicate archive entry")
+            if MANIFEST_ARCHIVE_PATH not in names:
+                raise RuntimeError("manifest is missing")
+            corrupt_entry = archive.testzip()
+            if corrupt_entry is not None:
+                raise RuntimeError("CRC failure for {}".format(corrupt_entry))
+
+            try:
+                manifest = json.loads(archive.read(MANIFEST_ARCHIVE_PATH))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise RuntimeError("manifest is not valid JSON") from exc
+            if not isinstance(manifest, dict):
+                raise RuntimeError("manifest root must be an object")
+            if manifest.get("layout_version") != BACKUP_LAYOUT_VERSION:
+                raise RuntimeError("unsupported manifest layout_version")
+            if not isinstance(manifest.get("source_layer"), str):
+                raise RuntimeError("manifest source_layer must be a string")
+            pairs = manifest.get("pairs")
+            files = manifest.get("files")
+            if not isinstance(pairs, list) or not isinstance(files, list):
+                raise RuntimeError("manifest pairs and files must be lists")
+
+            pair_records = {}
+            archive_roots = set()
+            for pair in pairs:
+                if not isinstance(pair, dict):
+                    raise RuntimeError("manifest pair must be an object")
+                required = (
+                    "account_uuid", "organisation_uuid", "archive_root",
+                    "file_count", "total_bytes",
+                )
+                if any(key not in pair for key in required):
+                    raise RuntimeError("manifest pair is missing required fields")
+                if not all(isinstance(pair[key], str) for key in required[:3]):
+                    raise RuntimeError("manifest pair identity fields must be strings")
+                if (
+                    not isinstance(pair["file_count"], int)
+                    or pair["file_count"] < 0
+                    or not isinstance(pair["total_bytes"], int)
+                    or pair["total_bytes"] < 0
+                ):
+                    raise RuntimeError("manifest pair counts must be non-negative integers")
+                archive_root = pair["archive_root"].strip("/")
+                if not archive_root or archive_root != pair["archive_root"] or ".." in archive_root.split("/"):
+                    raise RuntimeError("manifest pair archive_root is unsafe")
+                identity = (pair["account_uuid"], pair["organisation_uuid"])
+                if identity in pair_records or archive_root in archive_roots:
+                    raise RuntimeError("duplicate manifest pair")
+                pair_records[identity] = pair
+                archive_roots.add(archive_root)
+
+            declared_files = {}
+            pair_totals = {
+                identity: {"file_count": 0, "total_bytes": 0}
+                for identity in pair_records
+            }
+            for file_record in files:
+                if not isinstance(file_record, dict):
+                    raise RuntimeError("manifest file must be an object")
+                archive_name = file_record.get("archive_path")
+                size = file_record.get("size")
+                digest = file_record.get("sha256")
+                if not isinstance(archive_name, str) or not archive_name:
+                    raise RuntimeError("manifest archive_path must be a non-empty string")
+                if archive_name == MANIFEST_ARCHIVE_PATH or archive_name in declared_files:
+                    raise RuntimeError("reserved or duplicate manifest archive_path")
+                if archive_name.startswith("/") or ".." in archive_name.split("/"):
+                    raise RuntimeError("manifest archive_path is unsafe")
+                if not isinstance(size, int) or size < 0:
+                    raise RuntimeError("manifest file size must be a non-negative integer")
+                if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+                    raise RuntimeError("manifest file sha256 is invalid")
+
+                if manifest["source_layer"] == "desktop-metadata":
+                    account_uuid = file_record.get("account_uuid")
+                    organisation_uuid = file_record.get("organisation_uuid")
+                    if account_uuid is not None or organisation_uuid is not None:
+                        identity = (account_uuid, organisation_uuid)
+                        if identity not in pair_records:
+                            raise RuntimeError("desktop metadata file has an unknown pair")
+                        prefix = pair_records[identity]["archive_root"].rstrip("/") + "/"
+                        if not archive_name.startswith(prefix):
+                            raise RuntimeError("desktop metadata file is outside its pair root")
+                        pair_totals[identity]["file_count"] += 1
+                        pair_totals[identity]["total_bytes"] += size
+                declared_files[archive_name] = file_record
+
+            expected_names = set(declared_files) | {MANIFEST_ARCHIVE_PATH}
+            if set(names) != expected_names:
+                raise RuntimeError("archive entries do not match manifest")
+
+            for identity, pair in pair_records.items():
+                if pair_totals[identity]["file_count"] != pair["file_count"]:
+                    raise RuntimeError("manifest pair file_count mismatch")
+                if pair_totals[identity]["total_bytes"] != pair["total_bytes"]:
+                    raise RuntimeError("manifest pair total_bytes mismatch")
+
+            for archive_name, file_record in declared_files.items():
+                info = archive.getinfo(archive_name)
+                if info.is_dir() or info.file_size != file_record["size"]:
+                    raise RuntimeError("archive entry size mismatch for {}".format(archive_name))
+                digest = hashlib.sha256()
+                byte_count = 0
+                with archive.open(info, "r") as source:
+                    while True:
+                        chunk = source.read(HASH_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        byte_count += len(chunk)
+                if byte_count != file_record["size"]:
+                    raise RuntimeError("archive entry byte count mismatch for {}".format(archive_name))
+                if digest.hexdigest() != file_record["sha256"]:
+                    raise RuntimeError("archive entry sha256 mismatch for {}".format(archive_name))
+    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise RuntimeError("backup verification failed: {}".format(exc)) from exc
+
+
+def _backup_zip(src_dir, dest_zip, log, dry_run, *, pairs=None, source_layer=None):
+    """Zip ``src_dir`` atomically and include a portable integrity manifest."""
     if not os.path.isdir(src_dir):
         raise RuntimeError("Source dir not found: {}".format(src_dir))
+    if source_layer == "desktop-metadata" and not pairs:
+        raise RuntimeError(
+            "No account/organisation metadata pairs found; preserving prior backup"
+        )
     src_bytes, src_files = _dir_stats(src_dir)
     log("  Source : {}".format(src_dir))
     log("  Size   : {:,} bytes ({} files)".format(src_bytes, src_files))
     log("  Dest   : {}".format(dest_zip))
     if dry_run:
-        log("  [DRY-RUN] Would create zip.")
+        log(
+            "  [DRY-RUN] Would create zip with manifest.json "
+            "(layout_version={}, pairs={}).".format(
+                BACKUP_LAYOUT_VERSION, len(pairs or [])
+            )
+        )
         return src_bytes
     os.makedirs(os.path.dirname(dest_zip), exist_ok=True)
     tmp = dest_zip + ".tmp"
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, _, files in os.walk(src_dir):
-            for fname in files:
-                full    = os.path.join(root, fname)
-                arcname = os.path.relpath(full, src_dir).replace("\\", "/")
-                zf.write(full, arcname)
     try:
+        manifest_pairs = _manifest_pairs(src_dir, pairs)
+        manifest_files = []
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+            for full in _iter_source_files(src_dir):
+                arcname = os.path.relpath(full, src_dir).replace("\\", "/")
+                if arcname == MANIFEST_ARCHIVE_PATH:
+                    raise RuntimeError(
+                        "source path collides with reserved archive control path: {}".format(
+                            MANIFEST_ARCHIVE_PATH
+                        )
+                    )
+                if any(item["archive_path"] == arcname for item in manifest_files):
+                    raise RuntimeError("archive path collision: {}".format(arcname))
+                byte_count, digest = _write_hashed_zip_entry(zf, full, arcname)
+                file_record = {
+                    "archive_path": arcname,
+                    "size": byte_count,
+                    "sha256": digest,
+                }
+                for pair in manifest_pairs:
+                    prefix = pair["archive_root"].rstrip("/") + "/"
+                    if arcname.startswith(prefix):
+                        file_record["account_uuid"] = pair["account_uuid"]
+                        file_record["organisation_uuid"] = pair["organisation_uuid"]
+                        pair["file_count"] += 1
+                        pair["total_bytes"] += byte_count
+                        break
+                manifest_files.append(file_record)
+
+            manifest = {
+                "layout_version": BACKUP_LAYOUT_VERSION,
+                "source_layer": source_layer or "directory",
+                "pairs": manifest_pairs,
+                "files": manifest_files,
+            }
+            zf.writestr(
+                MANIFEST_ARCHIVE_PATH,
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            )
+        _verify_backup_zip(tmp)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+    try:
+        # Atomic replacement either publishes the verified temp archive or
+        # leaves an existing same-day final untouched. Never unlink the final.
         os.replace(tmp, dest_zip)
-    except PermissionError:
-        # Cloud sync tools that register a Windows shell extension (OneDrive,
-        # Dropbox, Sync.com) may hold dest_zip open during upload. Unlink +
-        # rename works when the sync client uses FILE_SHARE_DELETE.
-        os.unlink(dest_zip)  # standards: log/temp rotation
-        os.replace(tmp, dest_zip)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     log("  Written: {:,} bytes (compressed)".format(os.path.getsize(dest_zip)))
     return src_bytes
 
@@ -312,9 +562,17 @@ def main():
 
         log("--- [1/3] Desktop metadata ---")
         try:
-            meta_dir = _discover_meta_dir()
+            meta_pairs = _discover_meta_pairs()
             dest_zip = os.path.join(DEST_METADATA, "{}.zip".format(day_stamp))
-            total_bytes += _backup_zip(meta_dir, dest_zip, log, DRY_RUN)
+            total_bytes += _backup_zip(
+                SESSIONS_BASE,
+                dest_zip,
+                log,
+                DRY_RUN,
+                pairs=meta_pairs,
+                source_layer="desktop-metadata",
+            )
+            log("  Pairs  : {}".format(len(meta_pairs)))
             pruned = _prune_snapshots(DEST_METADATA, log, DRY_RUN)
             if pruned:
                 log("  Pruned {} old snapshot(s)".format(pruned))
@@ -327,7 +585,13 @@ def main():
         log("--- [2/3] JSONL transcripts ---")
         try:
             dest_zip = os.path.join(DEST_JSONL, "{}.zip".format(day_stamp))
-            total_bytes += _backup_zip(PROJECTS_ROOT, dest_zip, log, DRY_RUN)
+            total_bytes += _backup_zip(
+                PROJECTS_ROOT,
+                dest_zip,
+                log,
+                DRY_RUN,
+                source_layer="jsonl-projects",
+            )
             pruned = _prune_snapshots(DEST_JSONL, log, DRY_RUN)
             if pruned:
                 log("  Pruned {} old snapshot(s)".format(pruned))

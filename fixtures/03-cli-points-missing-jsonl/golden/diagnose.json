@@ -1,5 +1,5 @@
 {
-  "diagnosis_id": "daf13b67",
+  "diagnosis_id": "9750c339",
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
@@ -23,7 +23,7 @@
       "id": "cli-points-missing-jsonl-vss",
       "domain": "session",
       "mutator": "tools/sessions/restore_from_vss.py",
-      "next_command": "python tools/sessions/restore_from_vss.py --diagnosis-id daf13b67",
+      "next_command": "python tools/sessions/restore_from_vss.py --diagnosis-id 9750c339",
       "safety_preconditions": [
         "Quit Claude Desktop fully before restoring. Diagnose is read-only."
       ]

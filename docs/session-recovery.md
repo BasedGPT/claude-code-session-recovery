@@ -268,14 +268,14 @@ PROBLEM FOUND: The entire session list is empty after every Desktop restart, eve
 
 **Why it happens (plain).** Desktop stores session metadata under an account UUID and an organisation UUID. Logout/login can rotate that pair. Desktop then reads the new pair, while the populated metadata remains under the older pair.
 
-**What `diagnose.py` reports.** When more than one pair exists, the diagnostic lists every pair and its `local_*.json` count. A populated pair alongside an empty pair produces a read-only `account-uuid-rotation` finding.
+**What `diagnose.py` reports.** When more than one pair exists, the diagnostic lists every pair using a deterministic opaque label and its `local_*.json` count. Labels are ordered by hidden pair identity but reveal neither account nor organisation UUID. A populated pair alongside an empty pair, or multiple populated pairs, produces a read-only `account-uuid-rotation` finding. The toolkit never infers which pair is authoritative.
 
 ```
 Desktop pairs : 2
-  account=<older-account-uuid> organisation=<older-organisation-uuid> local_*.json=12
-  account=<new-account-uuid> organisation=<new-organisation-uuid> local_*.json=0
+  pair-01 local_*.json=12
+  pair-02 local_*.json=0
 ```
 
-**Recovery.** No automatic repair is provided by this toolkit. Confirm which pair Desktop currently reads and preserve the populated older pair before deciding on any manual recovery.
+**Recovery.** No automatic repair is provided by this toolkit. Confirm which pair Desktop currently reads and preserve every populated pair before deciding on any manual recovery. The metadata-synthesis mutator refuses to choose a destination while more than one pair exists. `diagnose.py` still reports any orphan-transcript finding in that state, but suppresses its synthesis command until the destination ambiguity is resolved.
 
 **Safety.** `diagnose.py` only enumerates directories and reads metadata. It does not move, copy, rename, delete, or rewrite user data.

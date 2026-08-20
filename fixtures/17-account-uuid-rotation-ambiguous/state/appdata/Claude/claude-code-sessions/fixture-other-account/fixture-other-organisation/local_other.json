@@ -1,0 +1,10 @@
+{
+  "sessionId": "local_other",
+  "cliSessionId": "f1xe1717-1717-0002-aaaa-000000000000",
+  "cwd": "C:\\Users\\fixture-user\\my-project",
+  "originCwd": "C:\\Users\\fixture-user\\my-project",
+  "createdAt": "2025-01-17T00:02:00.000Z",
+  "updatedAt": "2025-01-17T00:03:00.000Z",
+  "model": "claude-sonnet-4-6",
+  "title": "Fixture 17 other account session"
+}

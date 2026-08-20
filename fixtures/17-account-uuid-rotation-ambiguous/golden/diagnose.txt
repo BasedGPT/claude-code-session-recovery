@@ -1,0 +1,25 @@
+DIAGNOSE -- Claude Code Desktop Session Recovery Tools
+------------------------------------------------------------
+Diagnosis ID : ae7fe3a0
+Metadata     : 2 files  (2 with cliSessionId,  0 missing)
+JSONL files  : 3
+Desktop pairs : 3
+  pair-01 local_*.json=0
+  pair-02 local_*.json=1
+  pair-03 local_*.json=1
+
+
+PROBLEM FOUND: Sessions are absent from the session list even though their transcript files exist on disk
+  Details: docs/session-recovery.md#orphan-jsonl-no-metadata
+  Status : Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.
+
+  No automatic repair for this state. See:
+    docs/session-recovery.md#orphan-jsonl-no-metadata
+
+PROBLEM FOUND: Logout/login rotated the active account/organisation UUID pair, leaving populated metadata under an older pair while Desktop reads a new empty pair
+  Details: docs/session-recovery.md#account-uuid-rotation
+  Status : No automatic repair is available. Diagnose is read-only and safe to run anytime.
+
+  No automatic repair for this state. See:
+    docs/session-recovery.md#account-uuid-rotation
+

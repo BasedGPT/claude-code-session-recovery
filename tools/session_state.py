@@ -356,13 +356,35 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         "msix_real_path": msix_real_path,
         "mapped_drive_unc_mismatch_count": mapped_drive_count,
         "mapped_drive_affected_drives": mapped_drive_letters,
+        # Private token input: pair identity must invalidate a stale mutator
+        # token even when exactly one pair exists. diagnose.py omits this
+        # internal field from human and JSON output for compatibility.
+        "_desktop_session_pair_identities": [
+            {
+                "account_uuid": pair["account_uuid"],
+                "organisation_uuid": pair["organisation_uuid"],
+            }
+            for pair in desktop_session_pairs
+        ],
     }
     if len(desktop_session_pairs) > 1:
-        snapshot["desktop_session_pairs"] = desktop_session_pairs
-        if (
-            any(pair["local_metadata_count"] > 0 for pair in desktop_session_pairs)
-            and any(pair["local_metadata_count"] == 0 for pair in desktop_session_pairs)
-        ):
+        # Public diagnostics expose stable opaque labels and useful counts,
+        # never the account/organisation directory names. Labels follow the
+        # already-sorted hidden identities, so repeated scans of the same
+        # state produce the same output without disclosing either UUID.
+        snapshot["desktop_session_pairs"] = [
+            {
+                "pair_label": f"pair-{index:02d}",
+                "local_metadata_count": pair["local_metadata_count"],
+            }
+            for index, pair in enumerate(desktop_session_pairs, start=1)
+        ]
+        # More than one populated pair is just as ambiguous as a populated
+        # pair alongside a newly-created empty pair. Never treat the former
+        # as a healthy state merely because every pair has metadata.
+        if sum(
+            pair["local_metadata_count"] > 0 for pair in desktop_session_pairs
+        ) >= 1:
             snapshot["account_uuid_rotation_count"] = 1
     return snapshot
 
@@ -384,6 +406,7 @@ def make_diagnosis_id(snapshot):
         "jsonl_count",
         "schema_version",
         "mapped_drive_unc_mismatch_count",
+        "_desktop_session_pair_identities",
         "desktop_session_pairs",
         "account_uuid_rotation_count",
     )

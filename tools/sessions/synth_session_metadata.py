@@ -82,6 +82,15 @@ def _msix_do_not_run_message(snapshot):
 
 KNOWN_DO_NOT_RUN = [
     (
+        lambda s: len(s.get("desktop_session_pairs", [])) > 1,
+        (
+            "Multiple Claude Desktop account/organisation metadata pairs were "
+            "found. Synthesis cannot choose a safe destination; no pair was "
+            "selected or changed. Confirm the authoritative pair, then re-run "
+            "diagnose.py."
+        ),
+    ),
+    (
         lambda s: s["jsonl_orphan_count"] == 0,
         "No orphan JSONL files found. All transcripts already have metadata.",
     ),
@@ -169,10 +178,14 @@ def _find_orphan_jsonls(appdata_claude_dir, projects_dir):
 
 
 def _find_meta_dir(appdata_claude_dir):
-    """Return the first (and typically only) metadata directory."""
-    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
-        return meta_dir
-    return None
+    """Return the only metadata directory, or fail closed on ambiguity."""
+    candidates = list(find_metadata_directories(appdata_claude_dir))
+    if len(candidates) > 1:
+        raise RuntimeError(
+            "Multiple Claude Desktop account/organisation metadata pairs found; "
+            "synthesis destination is ambiguous"
+        )
+    return candidates[0][2] if candidates else None
 
 
 # ---------------------------------------------------------------------------

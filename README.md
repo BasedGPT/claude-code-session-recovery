@@ -164,7 +164,7 @@ Takes a compressed snapshot of all three data layers that Claude Code depends on
 - **JSONL transcripts** — `~/.claude/projects/` (the actual conversation history)
 - **FTS5 transcript index** — if you have one configured
 
-Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. Old snapshots are automatically sent to the system Trash/Recycle Bin — the script's default retention is configured by `KEEP_DAYS`.
+Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. New zips include a reserved top-level `manifest.json` with `layout_version: 2` and a SHA-256 and byte count for every archived file. The Desktop metadata manifest also lists every account/organisation pair and keeps the original `<account>/<organisation>/...` paths, so logout/login rotation is backed up as one collision-free archive rather than causing the metadata step to fail. The completed temporary zip is CRC-, schema-, size-, and SHA-256-verified before atomic publication. If no metadata pair exists, verification fails, replacement fails, or a source already contains the reserved top-level `manifest.json`, the layer is held and any existing same-day final is left untouched. Old snapshots are automatically sent to the system Trash/Recycle Bin — the script's default retention is configured by `KEEP_DAYS`.
 
 **Run it manually:**
 

@@ -1,5 +1,5 @@
 {
-  "diagnosis_id": "708f98b8",
+  "diagnosis_id": "dfeaba87",
   "tested_against": {
     "claude_desktop": null,
     "claude_code_cli": null,
@@ -14,7 +14,7 @@
       "id": "duplicate-synth-metadata",
       "domain": "session",
       "mutator": "tools/sessions/cleanup_synth_duplicates.py",
-      "next_command": "python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id 708f98b8",
+      "next_command": "python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id dfeaba87",
       "safety_preconditions": [
         "Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime."
       ]

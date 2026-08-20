@@ -47,6 +47,29 @@ def test_redact_snapshot_removes_home_paths_recursively(monkeypatch):
     assert result["cwd"].startswith("%USERPROFILE%")
 
 
+def test_redact_snapshot_never_emits_raw_pair_identity_keys():
+    result = diagnose._redact_snapshot(
+        {
+            "desktop_session_pairs": [
+                {
+                    "pair_label": "pair-01",
+                    "account_uuid": "private-account",
+                    "organisation_uuid": "private-organisation",
+                    "local_metadata_count": 2,
+                }
+            ]
+        }
+    )
+
+    assert result == {
+        "desktop_session_pairs": [
+            {"pair_label": "pair-01", "local_metadata_count": 2}
+        ]
+    }
+    assert "private-account" not in repr(result)
+    assert "private-organisation" not in repr(result)
+
+
 def test_recursive_search_quiet_hides_identifiers_and_paths(tmp_path, capsys):
     session_id = "12345678-1234-1234-1234-123456789abc"
     private_dir = tmp_path / "Private Client"

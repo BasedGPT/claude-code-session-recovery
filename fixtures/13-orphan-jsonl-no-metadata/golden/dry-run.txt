@@ -1,6 +1,6 @@
 Orphan JSONLs (no metadata): 2
 Mode: dry-run (writing to ./synth-out/)
-Diagnosis ID: 556a784f
+Diagnosis ID: e164de60
 
   SYNTH f1xe1313-1313-0004-aaaa-000000000000
         2025-01-04T00:00:00 | Fixture 13 orphan session 4 message

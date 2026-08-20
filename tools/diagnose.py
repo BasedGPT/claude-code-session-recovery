@@ -40,6 +40,9 @@ from session_state import (
 # Compatibility
 # ---------------------------------------------------------------------------
 
+_INTERNAL_SNAPSHOT_KEYS = {"_desktop_session_pair_identities"}
+_RAW_PAIR_IDENTITY_KEYS = {"account_uuid", "organisation_uuid"}
+
 # Focused slug tests and downstream callers historically import this name
 # from diagnose.py; retain this narrow compatibility alias while state lives in
 # session_state.py.
@@ -68,6 +71,10 @@ def _redact_snapshot(value, key=None):
         return {
             child_key: _redact_snapshot(child_value, child_key)
             for child_key, child_value in value.items()
+            if (
+                child_key not in _INTERNAL_SNAPSHOT_KEYS
+                and child_key not in _RAW_PAIR_IDENTITY_KEYS
+            )
         }
     if isinstance(value, list):
         return [_redact_snapshot(item, key) for item in value]
@@ -137,6 +144,29 @@ def eval_match(predicate, snapshot):
     return True
 
 
+def _suppress_ambiguous_synthesis_routes(matches, snapshot):
+    """Copy synthesis findings without routes when destination is ambiguous.
+
+    ``jsonl_orphan_count`` is a useful read-only signal, but synthesis is a
+    write-bearing operation and cannot safely choose among multiple
+    account/organisation roots. Keep the diagnostic findings while removing
+    only the unsafe synthesis route; never mutate the loaded troubleshooting
+    rows because they are the process-wide routing source of truth.
+    """
+    if len(snapshot.get("desktop_session_pairs", [])) <= 1:
+        return matches
+    safe_matches = []
+    for row in matches:
+        if row.get("mutator") == "tools/sessions/synth_session_metadata.py":
+            safe_row = dict(row)
+            safe_row["mutator"] = None
+            safe_row["next_command"] = None
+            safe_matches.append(safe_row)
+        else:
+            safe_matches.append(row)
+    return safe_matches
+
+
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
@@ -166,9 +196,8 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None,
         lines.append(f"Desktop pairs : {len(pairs)}")
         for pair in pairs:
             lines.append(
-                "  account={} organisation={} local_*.json={}".format(
-                    pair["account_uuid"],
-                    pair["organisation_uuid"],
+                "  {} local_*.json={}".format(
+                    pair["pair_label"],
                     pair["local_metadata_count"],
                 )
             )
@@ -360,6 +389,7 @@ def main():
 
     schema_ok = snapshot["schema_version"] == "recognised"
     matches = [row for row in rows if eval_match(row.get("match", {}), snapshot)]
+    matches = _suppress_ambiguous_synthesis_routes(matches, snapshot)
 
     # VS Code session cache check — live mode only; skipped in fixture/json mode
     # so golden outputs stay deterministic.

@@ -1,6 +1,6 @@
 DIAGNOSE -- Claude Code Desktop Session Recovery Tools
 ------------------------------------------------------------
-Diagnosis ID : 49163958
+Diagnosis ID : ce0d5933
 Metadata     : 4 files  (4 with cliSessionId,  0 missing)
 JSONL files  : 4
 Null stamps  : 1 metadata file(s) have null createdAt/updatedAt (can blank the entire session list)

@@ -58,6 +58,47 @@ def test_snapshot_preserves_metadata_transcript_link_counts(tmp_path):
     assert session_state.make_diagnosis_id(snapshot) == session_state.make_diagnosis_id(snapshot)
 
 
+def test_broad_audit_fields_do_not_change_diagnosis_token(tmp_path):
+    _write_state(tmp_path)
+    appdata = tmp_path / "appdata" / "Claude"
+    projects = tmp_path / "projects"
+
+    snapshot = session_state.build_snapshot(str(appdata), str(projects), fixture_mode=True)
+    audited = dict(snapshot)
+    audited["transcript_graph_audit"] = {
+        "reachable_count": 1,
+        "unreachable_count": 0,
+    }
+
+    assert session_state.make_diagnosis_id(audited) == session_state.make_diagnosis_id(snapshot)
+
+
+def test_replacing_the_sole_pair_invalidates_the_diagnosis_token(tmp_path):
+    _write_state(tmp_path)
+    appdata = tmp_path / "appdata" / "Claude"
+    projects = tmp_path / "projects"
+    sessions_root = appdata / "claude-code-sessions"
+
+    before = session_state.build_snapshot(str(appdata), str(projects), fixture_mode=True)
+    before_id = session_state.make_diagnosis_id(before)
+    (sessions_root / "account-a" / "organisation-a").rename(
+        sessions_root / "account-a" / "organisation-b"
+    )
+    (sessions_root / "account-a").rename(sessions_root / "account-b")
+    after = session_state.build_snapshot(str(appdata), str(projects), fixture_mode=True)
+    after_id = session_state.make_diagnosis_id(after)
+
+    assert "desktop_session_pairs" not in before
+    assert "desktop_session_pairs" not in after
+    assert before["_desktop_session_pair_identities"] == [
+        {"account_uuid": "account-a", "organisation_uuid": "organisation-a"}
+    ]
+    assert after["_desktop_session_pair_identities"] == [
+        {"account_uuid": "account-b", "organisation_uuid": "organisation-b"}
+    ]
+    assert before_id != after_id
+
+
 def test_metadata_directories_are_sorted_and_ignore_non_directories(tmp_path):
     _write_state(tmp_path)
     sessions_root = tmp_path / "appdata" / "Claude" / "claude-code-sessions"

@@ -302,17 +302,32 @@ are not regenerated automatically.
 
 ## Diagnosis ID hash construction
 
-The `diagnosis_id` is an 8-hex SHA-256 of these snapshot fields only (the `structural_keys` tuple in `session_state.make_diagnosis_id`):
+The `diagnosis_id` is an 8-hex SHA-256 of these 17 snapshot fields only (the `structural_keys` tuple in `session_state.make_diagnosis_id`):
 
 ```
 total_metadata_count, metadata_with_cli_count, metadata_missing_cli_count,
 metadata_dangling_cli_count, metadata_duplicate_cli_count,
 metadata_null_timestamp_count, cwd_junction_mismatch_count,
 cwd_slug_mismatch_count, truncated_jsonl_count, jsonl_orphan_count,
-cwd_prefix_types, jsonl_count, schema_version, mapped_drive_unc_mismatch_count
+cwd_prefix_types, jsonl_count, schema_version, mapped_drive_unc_mismatch_count,
+_desktop_session_pair_identities, desktop_session_pairs,
+account_uuid_rotation_count
 ```
 
-Every structural detection signal is included, so two states get the same ID only when they are structurally identical. Version fields (`desktop_version`, `cli_version`) and process state (`desktop_running`) are excluded. A mutator gets a mismatch if the broken state changes between diagnosis and repair, but not if the CLI version is updated in the meantime. Fixture-mode runs skip live system detection entirely, so golden outputs are identical across environments.
+Every structural detection signal is included, so two states get the same ID only when they are structurally identical. `_desktop_session_pair_identities` is a private token input present for zero, one, or many account/organisation pairs; it is the only snapshot field containing raw account and organisation UUID values, and `diagnose.py` omits it from human and JSON output. Public multi-pair records contain only deterministic opaque labels (`pair-01`, `pair-02`, and so on, ordered by the hidden identities) plus metadata counts. This prevents a stale token from authorising a mutator after one sole pair is replaced by another without exposing account identity. Version fields (`desktop_version`, `cli_version`) and process state (`desktop_running`) are excluded. A mutator gets a mismatch if the broken state changes between diagnosis and repair, but not if the CLI version is updated in the meantime. Fixture-mode runs skip live system detection entirely, so golden outputs are identical across environments.
+
+### Intelligence audit boundary
+
+Broad intelligence audits (for example, transcript-graph, persistence-store,
+or recovery-history analysis) are standalone read-only scripts. They may emit a
+report or an explicitly-versioned evidence file, but they must not add
+volatile or exploratory fields to the diagnosis snapshot, troubleshooting
+predicates, or `make_diagnosis_id`. Diagnosis IDs are the compatibility token
+between a read-only diagnosis and a narrowly-scoped mutator; changing them for
+an audit would invalidate existing golden outputs and stale-token checks without
+making a mutation safer. If an audit discovers a candidate repair, it must
+remain an operator-reviewed report until a separate mutator has its own
+fixture, gates, and stable routing contract.
 
 ---
 

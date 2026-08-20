@@ -1,6 +1,6 @@
 DIAGNOSE -- Claude Code Desktop Session Recovery Tools
 ------------------------------------------------------------
-Diagnosis ID : 708f98b8
+Diagnosis ID : dfeaba87
 Metadata     : 5 files  (5 with cliSessionId,  0 missing)
 JSONL files  : 4
 
@@ -9,6 +9,6 @@ PROBLEM FOUND: Two sessions in the session list open to the same conversation hi
   Safety : Quit Claude Desktop fully before any mutation. Diagnose is read-only and safe to run anytime.
 
   To repair -- dry-run first, review output, then add --apply:
-    python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id 708f98b8
-    python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id 708f98b8 --apply
+    python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id dfeaba87
+    python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id dfeaba87 --apply
 

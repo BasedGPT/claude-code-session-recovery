@@ -56,6 +56,8 @@ Read the output. It prints what it found, the matched problem, and the exact rep
 
 **You want to see which sessions are in which group, or groups disappeared after a Desktop update** → `python tools/groupings/list_groupings.py`
 
+**You want bounded structural evidence about lineage, local-agent containers, or VS Code session stores without changing anything** → [docs/read-only-intelligence-sidecars.md](docs/read-only-intelligence-sidecars.md)
+
 **You are an AI assistant helping a user with this repo** → [AGENTS.md](AGENTS.md)
 
 ## Symptom table
@@ -72,6 +74,18 @@ Run `python tools/diagnose.py` first — it identifies your specific problem and
 | Sessions missing from Desktop session list | `python tools/diagnose.py` | [session-recovery.md#orphan-jsonl-no-metadata](docs/session-recovery.md#orphan-jsonl-no-metadata) |
 | Group assignments wiped or missing after Desktop update | `python tools/groupings/list_groupings.py` | [architecture.md#session-grouping-layer](docs/architecture.md#session-grouping-layer) — read-only diagnostic; no automated fix |
 | Sessions missing from VS Code extension sidebar (exist on disk, resumable via CLI) | `python tools/sessions/recover_vscode_sessions.py` | [VS Code session list](#vs-code-extension-session-list) — caused by extension's 64 KB read buffer; repair injects missing entries into the workspace SQLite cache |
+
+For investigation without repair, the [read-only intelligence sidecars](docs/read-only-intelligence-sidecars.md)
+report bounded structural lineage evidence, aggregate local-agent session-store
+counts grouped only by structural bucket, and VS Code index/cache surface
+presence. They emit opaque identifiers only for bounded error subjects by
+default and do not emit conversation or output content, or parse
+`sessions-index.json` or cache-value content. Lineage overlap work and VS Code
+database reads stop at explicit operation/byte budgets and report partial. VS
+Code SQLite inspection runs only against a verified temporary DB/WAL/SHM
+snapshot; the live database is never opened by SQLite.
+Partial VS Code scans emit no surface classification, and any partial lineage
+scan suppresses all inferred session, relationship, and classification output.
 
 ---
 

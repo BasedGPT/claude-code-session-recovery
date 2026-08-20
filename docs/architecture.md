@@ -37,6 +37,7 @@ The code keeps command-line policy separate from reusable implementation:
 | `tools/transcript_audit.py` | Bounded, read-only transcript byte/JSON/graph facts shared by audit commands |
 | `tools/mutator_safety.py` | Policy-free mutation mechanics: invocation checks, fixture/live path resolution, fresh diagnosis, verified backup publication, and file writes |
 | `tools/session_metadata.py` | Complete/partial discovery of account/org `local_*.json` metadata; mutation selectors refuse opaque discovery errors before inference |
+| `tools/metadata_archive.py` | Shared exact layout-v2 Desktop-metadata manifest, path, filename, hash-field, and strict metadata-payload contract used by backup and restore |
 | `tools/sessions/restore_claude_metadata_backup.py` | Strict finite bounded Desktop-metadata archive/JSON validation, collision-free planning, held archive and non-reparse directory anchors, per-create normalized diagnosis/content guards, atomic create-no-replace publication, Windows handle-bound target/directory rollback, and safe-incomplete non-Windows retention |
 | `tools/worktrees/worktree_lifecycle.py` | Worktree marker claims, sentinel content, and quiet-stub implementation |
 | `tests/fixture_scenarios.py` | Isolated scenario execution shared by fixture verification and golden regeneration |
@@ -178,7 +179,7 @@ in [worktree-lifecycle.md](worktree-lifecycle.md).
 1. **Matching fixture.** A directory under `fixtures/<NN>-<name>/state/` reproduces the broken state the mutator targets. Its `golden/` directory holds expected diagnosis output, dry-run output, the dry-run exit contract, and any post-mutation snapshot. The runner fingerprints the isolated state copy before and after dry-run execution. A changed copy, unexpected exit status, or output mismatch fails the fixture. Enforced at contribution time.
 2. **Diagnosis-token enforcement.** The script accepts `--diagnosis-id <hex>` and refuses to run if the token does not match a fresh diagnosis of the current state. A stale token — state changed between diagnosis and apply — causes refusal. Enforced at runtime.
 3. **Backup before mutation.** A script that rewrites an existing file publishes a complete byte-verified backup to its documented backup directory before touching the live file. A failed copy or verification leaves no partial final-named backup and aborts the mutation. Enforced at runtime.
-4. **Schema probe.** If the state layout is not in the recognised fixture set, the script enters audit-only mode and emits no mutation command. Enforced at runtime.
+4. **Schema and inventory probe.** If the state layout is not in the recognised fixture set, or metadata/transcript discovery is partial, the script enters audit-only mode and emits no mutation command. Restore additionally requires a v2 manifest-backed archive for mutation; manifest-less archives are inspect-only. Enforced at runtime.
 5. **Quit-Desktop precondition.** Every live-state mutation requires Desktop to be fully quit. Scripts with a reliable platform-specific process probe enforce this directly. Other scripts print the precondition and require the operator to verify it before apply.
 
 Gates 2–4 use shared mechanics from `mutator_safety.py` where their existing

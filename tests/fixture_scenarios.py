@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from typing import Any, Iterator, Mapping, Optional, Sequence
 
 
@@ -31,6 +32,7 @@ class FixturePaths:
     dry_run_text: str
     dry_run_exit: str
     post_mutation_json: str
+    mutator_json: str
 
     @classmethod
     def from_fixture_dir(cls, fixture_dir: str) -> "FixturePaths":
@@ -44,6 +46,7 @@ class FixturePaths:
             dry_run_text=os.path.join(golden_dir, "dry-run.txt"),
             dry_run_exit=os.path.join(golden_dir, "dry-run.exit"),
             post_mutation_json=os.path.join(golden_dir, "post-mutation.json"),
+            mutator_json=os.path.join(golden_dir, "mutator.json"),
         )
 
     @property
@@ -139,6 +142,11 @@ class FixtureScenario:
 
     def find_mutator(self, diagnosis: Mapping[str, Any]) -> Optional[str]:
         """Return the first matched mutator as an absolute path, if any."""
+        contract = self._mutator_contract()
+        if contract is not None:
+            return os.path.join(
+                self.repo_root, os.path.normpath(contract["mutator"])
+            )
         for problem in diagnosis.get("matched_problems", []):
             mutator_rel = problem.get("mutator")
             if mutator_rel:
@@ -159,6 +167,7 @@ class FixtureScenario:
                 [
                     sys.executable,
                     mutator_path,
+                    *self._mutator_arguments(state_dir),
                     "--state",
                     state_dir,
                     "--diagnosis-id",
@@ -185,6 +194,7 @@ class FixtureScenario:
                 [
                     sys.executable,
                     mutator_path,
+                    *self._mutator_arguments(state_dir),
                     "--state",
                     state_dir,
                     "--diagnosis-id",
@@ -214,6 +224,48 @@ class FixtureScenario:
             returncode=result.returncode,
         )
 
+    def _mutator_contract(self) -> Optional[Mapping[str, Any]]:
+        if not os.path.isfile(self.paths.mutator_json):
+            return None
+        with open(self.paths.mutator_json, encoding="utf-8") as source:
+            contract = json.load(source)
+        if not isinstance(contract, dict) or not isinstance(contract.get("mutator"), str):
+            raise ValueError("golden/mutator.json must declare one mutator path")
+        return contract
+
+    def _mutator_arguments(self, state_dir: str) -> list[str]:
+        contract = self._mutator_contract()
+        if contract is None:
+            return []
+        arguments = contract.get("arguments", [])
+        if not isinstance(arguments, list) or not all(
+            isinstance(argument, str) for argument in arguments
+        ):
+            raise ValueError("mutator arguments must be a list of strings")
+        return [argument.replace("{state}", state_dir) for argument in arguments]
+
+    def _prepare_state_assets(self, state_dir: str) -> None:
+        contract = self._mutator_contract()
+        if contract is None or "zip_tree" not in contract:
+            return
+        zip_tree = contract["zip_tree"]
+        zip_output = contract.get("zip_output")
+        if not isinstance(zip_tree, str) or not isinstance(zip_output, str):
+            raise ValueError("zip_tree fixtures require a string zip_output")
+        source_root = os.path.join(state_dir, os.path.normpath(zip_tree))
+        destination = os.path.join(state_dir, os.path.normpath(zip_output))
+        if not os.path.isdir(source_root):
+            raise ValueError("fixture zip_tree source is missing")
+        with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+            for dirpath, dirnames, filenames in os.walk(source_root):
+                dirnames.sort()
+                for filename in sorted(filenames):
+                    path = os.path.join(dirpath, filename)
+                    archive.write(
+                        path,
+                        os.path.relpath(path, source_root).replace(os.sep, "/"),
+                    )
+
     @contextmanager
     def _temporary_state(self, prefix: str) -> Iterator[str]:
         """Copy fixture state to a disposable directory and remove it always."""
@@ -221,6 +273,7 @@ class FixtureScenario:
         try:
             state_dir = os.path.join(temp_dir, "state")
             shutil.copytree(self.paths.state_dir, state_dir)
+            self._prepare_state_assets(state_dir)
             yield state_dir
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)

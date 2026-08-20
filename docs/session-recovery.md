@@ -283,8 +283,11 @@ metadata is in a `backup_claude_state.py` Desktop archive,
 `restore_claude_metadata_backup.py` can verify the archive and restore each
 file to the exact account/organisation path recorded by its manifest. It does
 not merge or reinterpret pairs. Legacy flat archives require explicit account
-and organisation UUID arguments. Always review its default dry-run first and
-fully quit Desktop before `--apply`. Apply pins every destination directory,
+and organisation UUID arguments and are inspectable only; `--apply` requires a
+v2 manifest-backed archive. Always review the default dry-run first and fully
+quit Desktop before `--apply`. A usable apply command is withheld unless live
+metadata and transcript inventories are complete and the schema is recognised.
+Apply repeats that fail-closed gate, then pins every destination directory,
 holds and hashes the exact archive source, and repeats its target, Desktop,
 archive, and normalized live-state guards around every atomic create. Only its
 own verified staging files, created links, and empty setup directories are

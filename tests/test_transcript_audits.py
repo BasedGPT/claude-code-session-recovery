@@ -414,18 +414,10 @@ def test_identity_partial_project_probe_emits_only_envelope_errors_and_counts(
         "schema_version": "transcript-identity-audit-v1",
         "status": "partial",
         "summary": {
-            "bounded_field_read_count": 0,
-            "cwd_slug_mismatch_count": 0,
-            "duplicate_session_id_group_count": 0,
-            "explicit_cwd_count": 1,
-            "explicit_cwd_mismatch_count": 0,
-            "metadata_ambiguous_transcript_count": 0,
-            "observed_slug_collision_group_count": 0,
-            "physical_transcript_count": 1,
-            "resolved_path_split_group_count": 0,
+            "explicit_cwd_input_count": 1,
+            "retained_metadata_record_count": 1,
+            "retained_transcript_count": 1,
             "scan_error_count": 1,
-            "unique_session_id_count": 1,
-            "worktree_key_mismatch_candidate_count": 0,
         },
     }
     assert "private-state" not in json.dumps(payload)
@@ -471,6 +463,55 @@ def test_identity_metadata_discovery_reports_inaccessible_directories_as_partial
     }]
     assert "private-account" not in json.dumps(result["errors"])
     assert "private-organisation" not in json.dumps(result["errors"])
+
+
+def test_identity_metadata_cap_suppresses_all_transcript_and_cross_store_findings(
+    tmp_path, monkeypatch
+):
+    sid = "12121212-1212-1212-1212-121212121212"
+    projects = tmp_path / "projects"
+    _write(projects / "slug-a" / f"{sid}.jsonl", '{"cwd":"C:/one"}\n')
+    _write(projects / "slug-b" / f"{sid}.jsonl", '{"cwd":"C:/two"}\n')
+    appdata = tmp_path / "appdata" / "Claude"
+    metadata_dir = (
+        appdata / "claude-code-sessions" / "account" / "organisation"
+    )
+    _write(metadata_dir / "local_a.json", json.dumps({
+        "cliSessionId": sid,
+        "cwd": "C:/mismatch/.claude/worktrees/feature",
+    }))
+    _write(metadata_dir / "local_b.json", "{}")
+    monkeypatch.setattr(session_metadata, "MAX_METADATA_RECORDS", 1)
+
+    result = audit_identity(str(projects), str(appdata), ("C:/missing",))
+    public = audit_transcript_identity._public_result(
+        result, include_paths=True, details=True
+    )
+
+    assert result["status"] == "partial"
+    assert result["_identity_analysis_suppressed"] is True
+    assert result["findings"] == []
+    assert result["transcripts"] == []
+    assert result["duplicate_groups"] == []
+    assert result["slug_collision_groups"] == []
+    assert result["resolved_split_groups"] == []
+    assert result["metadata"] == []
+    assert result["explicit_cwds"] == []
+    assert result["summary"] == {
+        "retained_transcript_count": 2,
+        "retained_metadata_record_count": 1,
+        "explicit_cwd_input_count": 1,
+        "scan_error_count": 1,
+    }
+    assert set(public) == {
+        "schema_version", "read_only", "status", "summary", "errors"
+    }
+    assert public["errors"] == [{
+        "reference": "metadata-scan-entry-0001",
+        "code": "metadata_record_cap_exceeded",
+    }]
+    assert "mismatch" not in json.dumps(public)
+    assert str(tmp_path) not in json.dumps(public)
 
 
 def test_unavailable_projects_root_preserves_exit_two(tmp_path, capsys):
@@ -562,10 +603,122 @@ def test_absent_optional_metadata_root_is_a_complete_empty_inventory(tmp_path):
     assert inventory.records == ()
     assert inventory.directories == ()
     assert inventory.errors == ()
+    assert inventory.retained_bytes == 0
     assert repair_session_metadata.index_metadata(str(appdata)) == ({}, [])
     with pytest.raises(synth_session_metadata.MetadataDestinationError) as exc_info:
         synth_session_metadata._find_meta_dir(str(appdata), inventory)
     assert exc_info.value.directory_count == 0
+
+
+@pytest.mark.parametrize(
+    ("cap_name", "cap_value", "expected_code"),
+    [
+        (
+            "MAX_METADATA_ENTRIES_PER_DIRECTORY",
+            1,
+            "metadata_directory_entry_cap_exceeded",
+        ),
+        ("MAX_METADATA_DIRECTORIES", 1, "metadata_directory_cap_exceeded"),
+        ("MAX_METADATA_FILES", 1, "metadata_file_cap_exceeded"),
+        ("MAX_METADATA_RECORDS", 1, "metadata_record_cap_exceeded"),
+        (
+            "MAX_METADATA_TRAVERSAL_ENTRIES",
+            1,
+            "metadata_traversal_cap_exceeded",
+        ),
+    ],
+)
+def test_metadata_count_and_traversal_caps_return_opaque_partial_inventory(
+    tmp_path, monkeypatch, cap_name, cap_value, expected_code
+):
+    appdata = tmp_path / "appdata" / "Claude"
+    metadata_dir = (
+        appdata / "claude-code-sessions" / "account" / "organisation"
+    )
+    _write(metadata_dir / "local_a.json", "{}")
+    _write(metadata_dir / "local_b.json", "{}")
+    monkeypatch.setattr(session_metadata, cap_name, cap_value)
+
+    inventory = session_metadata.build_metadata_path_inventory(str(appdata))
+
+    assert inventory.status == "partial"
+    assert expected_code in {error.code for error in inventory.errors}
+    assert all("account" not in error.reference for error in inventory.errors)
+    assert len(inventory.records) <= 1
+
+
+def test_metadata_byte_depth_and_total_caps_are_bounded_before_retention(
+    tmp_path, monkeypatch
+):
+    appdata = tmp_path / "appdata" / "Claude"
+    metadata_dir = (
+        appdata / "claude-code-sessions" / "account" / "organisation"
+    )
+    oversized = _write(
+        metadata_dir / "local_a_oversized.json",
+        '{"secret":"xxxxxxxxxxxxxxxx"}',
+    )
+    deep = _write(metadata_dir / "local_b_deep.json", '{"a":{"b":{}}}')
+    valid = _write(metadata_dir / "local_c_valid.json", "{}")
+    monkeypatch.setattr(session_metadata, "MAX_METADATA_FILE_BYTES", 16)
+    monkeypatch.setattr(session_metadata, "MAX_METADATA_JSON_DEPTH", 2)
+    monkeypatch.setattr(session_metadata, "MAX_METADATA_TOTAL_RETAINED_BYTES", 2)
+
+    inventory = session_metadata.build_metadata_path_inventory(str(appdata))
+
+    assert inventory.status == "partial"
+    assert [record.path for record in inventory.records] == [str(valid)]
+    assert inventory.retained_bytes == 2
+    assert {error.code for error in inventory.errors} == {
+        "metadata_file_byte_cap_exceeded",
+        "metadata_json_depth_exceeded",
+    }
+    assert str(oversized) not in repr(inventory.errors)
+    assert str(deep) not in repr(inventory.errors)
+
+
+def test_metadata_total_retained_byte_cap_stops_at_a_bounded_prefix(
+    tmp_path, monkeypatch
+):
+    appdata = tmp_path / "appdata" / "Claude"
+    metadata_dir = (
+        appdata / "claude-code-sessions" / "account" / "organisation"
+    )
+    _write(metadata_dir / "local_a.json", "{}")
+    _write(metadata_dir / "local_b.json", "{}")
+    monkeypatch.setattr(session_metadata, "MAX_METADATA_TOTAL_RETAINED_BYTES", 2)
+
+    inventory = session_metadata.build_metadata_path_inventory(str(appdata))
+
+    assert inventory.status == "partial"
+    assert len(inventory.records) == 1
+    assert inventory.retained_bytes == 2
+    assert {error.code for error in inventory.errors} == {
+        "metadata_total_byte_cap_exceeded"
+    }
+
+
+def test_excluded_metadata_path_is_ignored_before_bounded_read_and_counts(
+    tmp_path, monkeypatch
+):
+    appdata = tmp_path / "appdata" / "Claude"
+    metadata_dir = (
+        appdata / "claude-code-sessions" / "account" / "organisation"
+    )
+    excluded = _write(metadata_dir / "local_a_excluded.json", '{"secret":1}')
+    included = _write(metadata_dir / "local_b_included.json", "{}")
+    monkeypatch.setattr(session_metadata, "MAX_METADATA_FILE_BYTES", 2)
+    monkeypatch.setattr(session_metadata, "MAX_METADATA_FILES", 1)
+    monkeypatch.setattr(session_metadata, "MAX_METADATA_RECORDS", 1)
+
+    inventory = session_metadata.build_metadata_path_inventory(
+        str(appdata), excluded_paths=[excluded]
+    )
+
+    assert inventory.status == "complete"
+    assert inventory.physical_file_count == 1
+    assert [record.path for record in inventory.records] == [str(included)]
+    assert inventory.retained_bytes == 2
 
 
 def test_synth_destination_requires_exactly_one_complete_metadata_root(tmp_path):
@@ -696,6 +849,54 @@ def test_metadata_partial_inventory_blocks_every_metadata_mutator_selector(
         monkeypatch.setattr(session_metadata, "open", real_open, raising=False)
     else:
         monkeypatch.setattr(session_metadata.os, "scandir", real_scandir)
+    assert _fingerprint(state) == before
+
+
+def test_metadata_record_cap_blocks_every_metadata_mutator_selector(
+    tmp_path, monkeypatch
+):
+    state = tmp_path / "state"
+    appdata = state / "appdata" / "Claude"
+    metadata_dir = (
+        appdata / "claude-code-sessions" / "account" / "organisation"
+    )
+    first_sid = "13131313-1313-1313-1313-131313131313"
+    second_sid = "14141414-1414-1414-1414-141414141414"
+    for name, sid in (("local_a.json", first_sid), ("local_b.json", second_sid)):
+        _write(metadata_dir / name, json.dumps({
+            "sessionId": name[:-5],
+            "cliSessionId": sid,
+            "cwd": "C:/bounded",
+        }))
+    projects = state / "projects"
+    _write(projects / "slug" / f"{first_sid}.jsonl", b"{}\n")
+    before = _fingerprint(state)
+    monkeypatch.setattr(session_metadata, "MAX_METADATA_RECORDS", 1)
+
+    inventory = session_metadata.build_metadata_path_inventory(str(appdata))
+    assert inventory.status == "partial"
+    assert {error.code for error in inventory.errors} == {
+        "metadata_record_cap_exceeded"
+    }
+
+    selectors = (
+        lambda: repair_session_metadata.index_metadata(str(appdata)),
+        lambda: synth_session_metadata._find_orphan_jsonls(
+            str(appdata), str(projects)
+        ),
+        lambda: repoint_session_to_jsonl._find_mismatches(
+            str(appdata), str(projects)
+        ),
+        lambda: cleanup_synth_duplicates.index_metadata(str(appdata)),
+        lambda: rewrite_metadata_cwd._find_targets(str(appdata), "c:/bounded"),
+        lambda: recover_deleted_branches_worktrees._gather_broken_sessions(
+            str(appdata)
+        ),
+        lambda: restore_from_vss._fx_scan_sessions(str(state)),
+    )
+    for selector in selectors:
+        with pytest.raises(session_metadata.IncompleteMetadataInventoryError):
+            selector()
     assert _fingerprint(state) == before
 
 

@@ -10,6 +10,17 @@ import os
 from dataclasses import dataclass
 
 
+# Discovery caps are deliberately generous for real Claude installations while
+# keeping hostile directory trees from retaining or traversing unbounded state.
+# Tests may monkeypatch them to exercise each boundary without large fixtures.
+MAX_PROJECT_DIRECTORY_ENTRIES = 20_000
+MAX_TRANSCRIPT_SLUG_DIRECTORIES = 10_000
+MAX_TRANSCRIPT_ENTRIES_PER_SLUG = 50_000
+MAX_TRANSCRIPT_TRAVERSAL_ENTRIES = 500_000
+MAX_TRANSCRIPT_FILES = 250_000
+MAX_TRANSCRIPT_PATHS = 200_000
+
+
 class DuplicateTranscriptIdError(RuntimeError):
     """Raised when a UUID-keyed compatibility index would be ambiguous."""
 
@@ -141,6 +152,30 @@ def iter_transcript_paths(projects_dir, session_id_is_valid=None):
             yield session_id, path
 
 
+def _bounded_scandir(path, entry_cap, traversal_state):
+    """Return a sorted bounded prefix plus cap flags.
+
+    One extra native directory entry may be examined, but is never retained,
+    to distinguish an exact-cap listing from an over-cap listing.  Sorting is
+    therefore bounded by ``entry_cap`` rather than the directory's true size.
+    """
+    retained = []
+    entry_cap_exceeded = False
+    traversal_cap_exceeded = False
+    with os.scandir(path) as entries:
+        for entry in entries:
+            if traversal_state[0] >= MAX_TRANSCRIPT_TRAVERSAL_ENTRIES:
+                traversal_cap_exceeded = True
+                break
+            if len(retained) >= entry_cap:
+                entry_cap_exceeded = True
+                break
+            retained.append(entry)
+            traversal_state[0] += 1
+    retained.sort(key=lambda entry: entry.name)
+    return retained, entry_cap_exceeded, traversal_cap_exceeded
+
+
 def build_transcript_path_inventory(projects_dir, session_id_is_valid=None):
     """Return every physical transcript path grouped by session ID.
 
@@ -153,10 +188,28 @@ def build_transcript_path_inventory(projects_dir, session_id_is_valid=None):
 
     grouped = {}
     error_codes = []
+    traversal_state = [0]
+    slug_directory_count = 0
+    transcript_file_count = 0
+    transcript_path_count = 0
+    stop_inventory = False
+
+    def add_error(code, *, unique=False):
+        if not unique or code not in error_codes:
+            error_codes.append(code)
+
     projects_dir = os.path.abspath(projects_dir)
     try:
-        with os.scandir(projects_dir) as entries:
-            slug_entries = sorted(entries, key=lambda entry: entry.name)
+        slug_entries, entry_cap, traversal_cap = _bounded_scandir(
+            projects_dir,
+            MAX_PROJECT_DIRECTORY_ENTRIES,
+            traversal_state,
+        )
+        if entry_cap:
+            add_error("projects_entry_cap_exceeded", unique=True)
+        if traversal_cap:
+            add_error("transcript_traversal_cap_exceeded", unique=True)
+            stop_inventory = True
     except FileNotFoundError:
         # Session-state fixtures and fresh installs legitimately have no
         # projects directory.  Known absence is a complete empty inventory;
@@ -164,21 +217,35 @@ def build_transcript_path_inventory(projects_dir, session_id_is_valid=None):
         slug_entries = []
     except OSError:
         slug_entries = []
-        error_codes.append("projects_root_list_failed")
+        add_error("projects_root_list_failed")
 
     for slug_entry in slug_entries:
+        if stop_inventory:
+            break
         try:
             is_directory = slug_entry.is_dir()
         except OSError:
-            error_codes.append("slug_stat_failed")
+            add_error("slug_stat_failed")
             continue
         if not is_directory:
             continue
+        if slug_directory_count >= MAX_TRANSCRIPT_SLUG_DIRECTORIES:
+            add_error("slug_directory_cap_exceeded", unique=True)
+            break
+        slug_directory_count += 1
         try:
-            with os.scandir(slug_entry.path) as entries:
-                transcript_entries = sorted(entries, key=lambda entry: entry.name)
+            transcript_entries, entry_cap, traversal_cap = _bounded_scandir(
+                slug_entry.path,
+                MAX_TRANSCRIPT_ENTRIES_PER_SLUG,
+                traversal_state,
+            )
+            if entry_cap:
+                add_error("slug_entry_cap_exceeded", unique=True)
+            if traversal_cap:
+                add_error("transcript_traversal_cap_exceeded", unique=True)
+                stop_inventory = True
         except OSError:
-            error_codes.append("slug_list_failed")
+            add_error("slug_list_failed")
             continue
         for entry in transcript_entries:
             if not entry.name.endswith(".jsonl"):
@@ -186,14 +253,24 @@ def build_transcript_path_inventory(projects_dir, session_id_is_valid=None):
             try:
                 is_file = entry.is_file()
             except OSError:
-                error_codes.append("transcript_stat_failed")
+                add_error("transcript_stat_failed")
                 continue
             if not is_file:
-                error_codes.append("transcript_not_regular_file")
+                add_error("transcript_not_regular_file")
                 continue
+            if transcript_file_count >= MAX_TRANSCRIPT_FILES:
+                add_error("transcript_file_cap_exceeded", unique=True)
+                stop_inventory = True
+                break
+            transcript_file_count += 1
             session_id = os.path.splitext(entry.name)[0]
             if session_id_is_valid(session_id):
+                if transcript_path_count >= MAX_TRANSCRIPT_PATHS:
+                    add_error("transcript_path_cap_exceeded", unique=True)
+                    stop_inventory = True
+                    break
                 grouped.setdefault(session_id, []).append(os.path.abspath(entry.path))
+                transcript_path_count += 1
 
     by_session_id = {
         session_id: tuple(sorted(paths))

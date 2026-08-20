@@ -235,6 +235,7 @@ def build_snapshot(
     *,
     excluded_metadata_paths=None,
     excluded_metadata_pairs=None,
+    include_inventory_status=False,
 ):
     """Probe state and return the deterministic diagnosis snapshot."""
     excluded_paths = {
@@ -415,6 +416,12 @@ def build_snapshot(
             for pair in desktop_session_pairs
         ],
     }
+    if include_inventory_status:
+        # Mutators need the completeness facts that diagnostics deliberately
+        # collapse into conservative counts. Keep them opt-in so the public
+        # diagnosis schema and existing golden output remain stable.
+        snapshot["_metadata_inventory_complete"] = metadata_inventory.is_complete
+        snapshot["_transcript_inventory_complete"] = transcript_inventory.is_complete
     if len(desktop_session_pairs) > 1:
         # Public diagnostics expose stable opaque labels and useful counts,
         # never the account/organisation directory names. Labels follow the

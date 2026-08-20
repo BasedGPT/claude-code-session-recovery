@@ -1,8 +1,9 @@
 """Safely restore Claude Desktop metadata from a toolkit backup archive.
 
 The command is dry-run by default.  It accepts layout-version 2 Desktop
-metadata archives produced by ``backup_claude_state.py`` and older flat,
-manifest-less metadata archives.  It never overwrites differing live files.
+metadata archives produced by ``backup_claude_state.py`` and can inspect older
+flat, manifest-less metadata archives.  Only v2 archives are mutation-eligible,
+and differing live files are never overwritten.
 
 Exit statuses:
   0  dry-run completed, nothing needed restoring, or apply completed
@@ -20,14 +21,18 @@ import json
 import math
 import os
 from pathlib import PurePosixPath
-import re
 import secrets
 import stat as stat_module
 import sys
 import tempfile
-import unicodedata
 import zipfile
 from typing import BinaryIO, Callable
+
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
 
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +41,20 @@ sys.path.insert(0, TOOL_DIR)
 sys.path.insert(0, TOOLS_DIR)
 
 from lock_utils import acquire_lock, release_lock  # noqa: E402
+from metadata_archive import (  # noqa: E402
+    LAYOUT_VERSION,
+    MANIFEST_NAME,
+    MAX_METADATA_FILE_BYTES,
+    SOURCE_LAYER,
+    MetadataArchiveFormatError,
+    canonical_uuid as _canonical_uuid_like,
+    filesystem_key as _filesystem_key,
+    metadata_filename as _metadata_filename,
+    safe_archive_path as _safe_archive_path,
+    safe_segment as _safe_segment,
+    validate_metadata_payload_bytes,
+    validate_v2_metadata_manifest,
+)
 from mutator_safety import (  # noqa: E402
     current_snapshot_and_diagnosis_id,
     resolve_state_paths,
@@ -44,32 +63,15 @@ from platform_support import default_claude_paths, desktop_process_running  # no
 from session_state import build_snapshot, make_diagnosis_id  # noqa: E402
 
 
-LAYOUT_VERSION = 2
-SOURCE_LAYER = "desktop-metadata"
-MANIFEST_NAME = "manifest.json"
 HASH_CHUNK_SIZE = 1024 * 1024
 MAX_ARCHIVE_FILES = 10_000
 MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
-MAX_METADATA_FILE_BYTES = 16 * 1024 * 1024
 MAX_ARCHIVE_SOURCE_BYTES = 1024 * 1024 * 1024
 MAX_GUARD_FILES = 100_000
 MAX_GUARD_BYTES = 4 * 1024 * 1024 * 1024
 MAX_JSON_INTEGER_DIGITS = 4096
 MAX_JSON_DEPTH = 256
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
-SAFE_SEGMENT_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+$")
-METADATA_FILENAME_RE = re.compile(
-    r"^local_[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.json$"
-)
-WINDOWS_RESERVED_NAMES = {
-    "CON", "PRN", "AUX", "NUL",
-    *("COM{}".format(index) for index in range(1, 10)),
-    *("LPT{}".format(index) for index in range(1, 10)),
-}
 
 
 class RestoreRefusal(RuntimeError):
@@ -98,51 +100,6 @@ class RestorePlan:
     eligible: tuple[RestoreEntry, ...]
     identical: tuple[RestoreEntry, ...]
     identical_file_ids: tuple[tuple[RestoreEntry, tuple[int, object]], ...]
-
-
-def _safe_segment(value: object) -> bool:
-    if not (
-        isinstance(value, str)
-        and value not in ("", ".", "..")
-        and value == value.strip()
-        and not value.endswith(".")
-        and SAFE_SEGMENT_RE.fullmatch(value) is not None
-    ):
-        return False
-    windows_stem = value.split(".", 1)[0].upper()
-    return windows_stem not in WINDOWS_RESERVED_NAMES
-
-
-def _canonical_uuid_like(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and _safe_segment(value)
-        and UUID_RE.fullmatch(value) is not None
-    )
-
-
-def _metadata_filename(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and _safe_segment(value)
-        and METADATA_FILENAME_RE.fullmatch(value) is not None
-    )
-
-
-def _safe_archive_path(value: object) -> bool:
-    if not isinstance(value, str) or not value or "\\" in value:
-        return False
-    path = PurePosixPath(value)
-    return (
-        not path.is_absolute()
-        and str(path) == value
-        and all(_safe_segment(part) for part in path.parts)
-    )
-
-
-def _filesystem_key(value: str) -> str:
-    """Return a conservative cross-platform collision key."""
-    return unicodedata.normalize("NFC", value).casefold()
 
 
 def _is_symlink(info: zipfile.ZipInfo) -> bool:
@@ -997,15 +954,13 @@ def _validate_metadata_payload(
         raw = archive.read(info)
         if len(raw) != info.file_size:
             raise RestoreRefusal("metadata payload size validation failed")
-        payload = _strict_json_loads(
-            raw, "metadata payload is not valid strict UTF-8 JSON"
-        )
+        validate_metadata_payload_bytes(raw)
     except RestoreRefusal:
         raise
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
-        raise RestoreRefusal("metadata payload is not valid UTF-8 JSON") from exc
-    if not isinstance(payload, dict):
-        raise RestoreRefusal("metadata payload root must be a JSON object")
+    except MetadataArchiveFormatError as exc:
+        raise RestoreRefusal(str(exc)) from exc
+    except OSError as exc:
+        raise RestoreRefusal("metadata payload cannot be read") from exc
     return len(raw), hashlib.sha256(raw).hexdigest()
 
 
@@ -1071,128 +1026,37 @@ def _validate_v2(
     if manifest_info is None:
         raise RestoreRefusal("layout v2 manifest is missing")
     manifest = _load_manifest(archive, manifest_info, max_manifest_bytes)
-    if set(manifest) != {"layout_version", "source_layer", "pairs", "files"}:
-        raise RestoreRefusal("manifest top-level schema is invalid")
-    if manifest.get("layout_version") != LAYOUT_VERSION:
-        raise RestoreRefusal("unsupported manifest layout_version")
-    if manifest.get("source_layer") != SOURCE_LAYER:
-        raise RestoreRefusal("archive is not a Desktop metadata backup")
-    pairs = manifest.get("pairs")
-    files = manifest.get("files")
-    if not isinstance(pairs, list) or not pairs:
-        raise RestoreRefusal("manifest must declare at least one metadata pair")
-    if not isinstance(files, list):
-        raise RestoreRefusal("manifest files must be a list")
+    archive_sizes = {
+        name: info.file_size for name, info in names.items() if name != MANIFEST_NAME
+    }
+    try:
+        validated = validate_v2_metadata_manifest(manifest, archive_sizes)
+    except MetadataArchiveFormatError as exc:
+        raise RestoreRefusal(str(exc)) from exc
 
-    pair_records = {}
-    roots = set()
-    sorted_identities = []
-    for pair in pairs:
-        if not isinstance(pair, dict) or set(pair) != {
-            "account_uuid", "organisation_uuid", "archive_root",
-            "file_count", "total_bytes",
-        }:
-            raise RestoreRefusal("manifest pair schema is invalid")
-        account = pair["account_uuid"]
-        organisation = pair["organisation_uuid"]
-        archive_root = pair["archive_root"]
-        if not _canonical_uuid_like(account) or not _canonical_uuid_like(organisation):
-            raise RestoreRefusal("manifest pair identity is not a canonical UUID")
-        expected_root = account + "/" + organisation
-        if archive_root != expected_root or not _safe_archive_path(archive_root):
-            raise RestoreRefusal("manifest pair root does not match its identity")
-        if (
-            not isinstance(pair["file_count"], int)
-            or isinstance(pair["file_count"], bool)
-            or pair["file_count"] < 0
-            or not isinstance(pair["total_bytes"], int)
-            or isinstance(pair["total_bytes"], bool)
-            or pair["total_bytes"] < 0
-        ):
-            raise RestoreRefusal("manifest pair counts are invalid")
-        identity = (account, organisation)
-        if identity in pair_records or _filesystem_key(archive_root) in roots:
-            raise RestoreRefusal("manifest contains duplicate metadata pairs")
-        pair_records[identity] = pair
-        roots.add(_filesystem_key(archive_root))
-        sorted_identities.append(identity)
-
+    identities = sorted(
+        (pair.account_uuid, pair.organisation_uuid) for pair in validated.pairs
+    )
     labels = {
         identity: "pair-{:02d}".format(index)
-        for index, identity in enumerate(sorted(sorted_identities), start=1)
+        for index, identity in enumerate(identities, start=1)
     }
-    totals = {
-        identity: {"file_count": 0, "total_bytes": 0}
-        for identity in pair_records
-    }
-    declared_names = set()
-    target_names = set()
     entries = []
-    for record in files:
-        if not isinstance(record, dict) or set(record) != {
-            "archive_path", "size", "sha256", "account_uuid", "organisation_uuid"
-        }:
-            raise RestoreRefusal("manifest file schema is invalid")
-        archive_path = record["archive_path"]
-        size = record["size"]
-        digest = record["sha256"]
-        identity = (record["account_uuid"], record["organisation_uuid"])
-        path_parts = PurePosixPath(archive_path).parts if _safe_archive_path(archive_path) else ()
-        if (
-            len(path_parts) != 3
-            or path_parts[0] != identity[0]
-            or path_parts[1] != identity[1]
-            or not _metadata_filename(path_parts[2])
-            or archive_path == MANIFEST_NAME
-            or archive_path in declared_names
-        ):
-            raise RestoreRefusal("manifest declares an unsafe or duplicate file")
-        if identity not in pair_records:
-            raise RestoreRefusal("manifest file references an unknown metadata pair")
-        root = pair_records[identity]["archive_root"]
-        prefix = root + "/"
-        if not archive_path.startswith(prefix) or archive_path == prefix:
-            raise RestoreRefusal("manifest file is outside its metadata pair")
-        relative_tail = archive_path[len(prefix):]
-        target_relative = root + "/" + relative_tail
-        folded_target = _filesystem_key(target_relative)
-        if folded_target in target_names:
-            raise RestoreRefusal("manifest files collide at the restore target")
-        if (
-            not isinstance(size, int)
-            or isinstance(size, bool)
-            or size < 0
-            or not isinstance(digest, str)
-            or SHA256_RE.fullmatch(digest) is None
-        ):
-            raise RestoreRefusal("manifest file integrity fields are invalid")
-        info = names.get(archive_path)
-        if info is None or info.file_size != size:
-            raise RestoreRefusal("manifest entries or sizes do not match the archive")
+    for record in validated.files:
+        info = names[record.archive_path]
         actual_size, actual_digest = _validate_metadata_payload(archive, info)
-        if actual_size != size or actual_digest != digest:
+        if actual_size != record.size or actual_digest != record.sha256:
             raise RestoreRefusal("archive entry hash validation failed")
-        totals[identity]["file_count"] += 1
-        totals[identity]["total_bytes"] += size
-        declared_names.add(archive_path)
-        target_names.add(folded_target)
+        identity = (record.account_uuid, record.organisation_uuid)
         entries.append(RestoreEntry(
-            archive_path=archive_path,
-            target_relative=target_relative,
+            archive_path=record.archive_path,
+            target_relative=record.archive_path,
             pair_label=labels[identity],
-            file_name=PurePosixPath(archive_path).name,
-            size=size,
-            sha256=digest,
+            file_name=PurePosixPath(record.archive_path).name,
+            size=record.size,
+            sha256=record.sha256,
         ))
-
-    if set(names) != declared_names | {MANIFEST_NAME}:
-        raise RestoreRefusal("archive entries do not exactly match the manifest")
-    for identity, pair in pair_records.items():
-        if totals[identity]["file_count"] != pair["file_count"]:
-            raise RestoreRefusal("manifest pair file_count does not match")
-        if totals[identity]["total_bytes"] != pair["total_bytes"]:
-            raise RestoreRefusal("manifest pair total_bytes does not match")
-    return len(pair_records), tuple(sorted(entries, key=lambda item: item.target_relative))
+    return len(validated.pairs), tuple(entries)
 
 
 def _validate_legacy(
@@ -1852,8 +1716,14 @@ class _LiveStateGuard:
         self.expected_diagnosis_id = expected_diagnosis_id
         self.fixture_mode = fixture_mode
         snapshot = build_snapshot(
-            appdata_dir, projects_dir, fixture_mode=fixture_mode
+            appdata_dir,
+            projects_dir,
+            fixture_mode=fixture_mode,
+            include_inventory_status=True,
         )
+        refusal = _mutation_refusal_reason(snapshot, "v2")
+        if refusal:
+            raise RestoreRefusal(refusal)
         if make_diagnosis_id(snapshot) != expected_diagnosis_id:
             raise RestoreRefusal("diagnosis ID changed before transaction setup")
         try:
@@ -1878,7 +1748,11 @@ class _LiveStateGuard:
             fixture_mode=self.fixture_mode,
             excluded_metadata_paths=created_targets,
             excluded_metadata_pairs=created_pairs,
+            include_inventory_status=True,
         )
+        refusal = _mutation_refusal_reason(snapshot, "v2")
+        if refusal:
+            raise RestoreRefusal(refusal)
         if make_diagnosis_id(snapshot) != self.expected_diagnosis_id:
             raise RestoreRefusal("diagnosis state changed during publication")
         try:
@@ -1896,6 +1770,19 @@ class _LiveStateGuard:
             raise RestoreRefusal(
                 "Claude Desktop started or its state became unknown during publication"
             )
+
+
+def _mutation_refusal_reason(snapshot: dict, layout: str) -> str | None:
+    """Return the gate-4 reason that makes mutation unavailable, if any."""
+    if layout != "v2":
+        return "mutation requires a layout v2 manifest-backed archive"
+    if not snapshot.get("_metadata_inventory_complete", False):
+        return "live metadata inventory is incomplete"
+    if not snapshot.get("_transcript_inventory_complete", False):
+        return "live transcript inventory is incomplete"
+    if snapshot.get("schema_version") != "recognised":
+        return "live state schema is unrecognised"
+    return None
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -1932,9 +1819,13 @@ def run(argv: list[str] | None = None) -> int:
                 "restore lock is held or its owner cannot be verified"
             ) from exc
         acquired = True
-        _snapshot, fresh_id = current_snapshot_and_diagnosis_id(
-            appdata_dir, projects_dir, fixture_mode=bool(args.state)
+        snapshot = build_snapshot(
+            appdata_dir,
+            projects_dir,
+            fixture_mode=bool(args.state),
+            include_inventory_status=True,
         )
+        fresh_id = make_diagnosis_id(snapshot)
         if args.diagnosis_id != fresh_id:
             raise RestoreRefusal(
                 "diagnosis ID is stale; run diagnose.py again before restoring"
@@ -1953,11 +1844,17 @@ def run(argv: list[str] | None = None) -> int:
             args.archive, sessions_root, plan,
             include_paths=args.include_paths, apply=args.apply,
         )
+        mutation_refusal = _mutation_refusal_reason(snapshot, layout)
         if not args.apply:
             print()
             print("DRY RUN — no files or directories were changed.")
-            print("Re-run with --apply after fully quitting Claude Desktop.")
+            if mutation_refusal:
+                print("Apply unavailable: {}.".format(mutation_refusal))
+            else:
+                print("Re-run with --apply after fully quitting Claude Desktop.")
             return 0
+        if mutation_refusal:
+            raise RestoreRefusal(mutation_refusal)
         if desktop_process_running():
             raise RestoreRefusal(
                 "Claude Desktop is running or its state is unknown; quit it fully"

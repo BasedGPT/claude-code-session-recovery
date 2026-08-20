@@ -194,7 +194,7 @@ Takes a compressed snapshot of all three data layers that Claude Code depends on
 - **JSONL transcripts** — `~/.claude/projects/` (the actual conversation history)
 - **FTS5 transcript index** — if you have one configured
 
-Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. New zips include a reserved top-level `manifest.json` with `layout_version: 2` and a SHA-256 and byte count for every archived file. The Desktop metadata manifest also lists every account/organisation pair and keeps the original `<account>/<organisation>/...` paths, so logout/login rotation is backed up as one collision-free archive rather than causing the metadata step to fail. The completed temporary zip is CRC-, schema-, size-, and SHA-256-verified before atomic publication. If no metadata pair exists, verification fails, replacement fails, or a source already contains the reserved top-level `manifest.json`, the layer is held and any existing same-day final is left untouched. Old snapshots are automatically sent to the system Trash/Recycle Bin — the script's default retention is configured by `KEEP_DAYS`.
+Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. New zips include a reserved top-level `manifest.json` with `layout_version: 2` and a SHA-256 and byte count for every archived file. The Desktop metadata archive contains exactly direct, regular, restore-compatible `local_*.json` files under canonical `<account>/<organisation>/` directories; root files, nested files, temporary files, and auxiliary files are not archived. Its manifest lists every discovered canonical account/organisation pair, so logout/login rotation remains collision-free. The backup and restore commands share the v2 manifest, path, filename, and strict metadata-JSON validator. The completed temporary zip is CRC-, schema-, size-, payload-, and SHA-256-verified before atomic publication. Zero eligible metadata files, an incompatible pair or payload, verification failure, or replacement failure holds the layer and leaves any existing same-day final untouched. Old snapshots are automatically sent to the system Trash/Recycle Bin — the script's default retention is configured by `KEEP_DAYS`.
 
 **Run it manually:**
 
@@ -229,7 +229,8 @@ python tools/sessions/restore_claude_metadata_backup.py PATH_TO_ZIP --diagnosis-
 
 Layout-version 2 archives are restored to the exact account/organisation paths
 declared by their verified manifest. Older flat, manifest-less metadata zips
-are accepted only when both destinations are explicit:
+remain inspectable in dry-run only when both destinations are explicit; apply
+always refuses them because mutation requires v2 manifest integrity evidence:
 
 ```
 python tools/sessions/restore_claude_metadata_backup.py OLD_ZIP \
@@ -246,6 +247,11 @@ overlong integers, excessive nesting, nested paths, binary files, invalid JSON,
 and Windows reserved names are refused without a traceback. CLI cap arguments
 can lower, but never raise, the built-in file,
 uncompressed-byte, and manifest-byte ceilings.
+
+Dry-run offers apply guidance only when both live metadata and transcript
+inventories were completely enumerated, the live schema is recognised, and the
+archive is v2 manifest-backed. `--apply` repeats those gate-4 checks and fails
+closed if any inventory becomes partial or the schema is unrecognised.
 
 Existing byte-identical files are skipped. One differing target refuses the
 entire restore; there is no overwrite option. Apply creates all required empty

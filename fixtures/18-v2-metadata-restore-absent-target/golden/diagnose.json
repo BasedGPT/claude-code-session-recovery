@@ -1,0 +1,43 @@
+{
+  "diagnosis_id": "36d15243",
+  "tested_against": {
+    "claude_desktop": null,
+    "claude_code_cli": null,
+    "platform": "fixture"
+  },
+  "schema_probe": "recognised",
+  "install_type": null,
+  "msix_real_path": null,
+  "desktop_running": false,
+  "matched_problems": [],
+  "audit_only_problems": [],
+  "schema_mismatch": false,
+  "snapshot": {
+    "total_metadata_count": 1,
+    "metadata_with_cli_count": 1,
+    "metadata_missing_cli_count": 0,
+    "metadata_dangling_cli_count": 0,
+    "metadata_duplicate_cli_count": 0,
+    "metadata_null_timestamp_count": 0,
+    "cwd_junction_mismatch_count": 0,
+    "jsonl_orphan_count": 0,
+    "cwd_slug_mismatch_count": 0,
+    "truncated_jsonl_count": 0,
+    "cwd_prefix_types": {
+      "junction": 0,
+      "canonical": 0,
+      "bare_root": 0,
+      "other": 1
+    },
+    "jsonl_count": 1,
+    "schema_version": "recognised",
+    "desktop_version": null,
+    "cli_version": null,
+    "desktop_running": false,
+    "running_inside_desktop": false,
+    "install_type": null,
+    "msix_real_path": null,
+    "mapped_drive_unc_mismatch_count": 0,
+    "mapped_drive_affected_drives": []
+  }
+}

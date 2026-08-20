@@ -1,0 +1,6 @@
+{
+  "mutator": "tools/sessions/restore_claude_metadata_backup.py",
+  "arguments": ["{state}/metadata-backup-v2.zip"],
+  "zip_tree": "metadata-backup-v2",
+  "zip_output": "metadata-backup-v2.zip"
+}

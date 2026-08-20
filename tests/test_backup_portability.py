@@ -19,15 +19,21 @@ if SESSIONS not in sys.path:
 import backup_claude_state  # noqa: E402
 
 
+ACCOUNT_A = "11111111-1111-1111-1111-111111111111"
+ORGANISATION_A = "22222222-2222-2222-2222-222222222222"
+ACCOUNT_B = "33333333-3333-3333-3333-333333333333"
+ORGANISATION_B = "44444444-4444-4444-4444-444444444444"
+
+
 class BackupPortabilityTests(unittest.TestCase):
     def test_metadata_pair_discovery_handles_zero_pairs(self):
         with tempfile.TemporaryDirectory() as root:
             destination = os.path.join(root, "metadata.zip")
             valid_sessions = os.path.join(root, "valid-sessions")
-            valid_metadata = os.path.join(valid_sessions, "account-a", "organisation-a")
+            valid_metadata = os.path.join(valid_sessions, ACCOUNT_A, ORGANISATION_A)
             os.makedirs(valid_metadata)
             with open(os.path.join(valid_metadata, "local_one.json"), "wb") as handle:
-                handle.write(b"valid\n")
+                handle.write(b'{"sessionId":"valid"}\n')
             with mock.patch.object(backup_claude_state, "SESSIONS_BASE", valid_sessions):
                 valid_pairs = backup_claude_state._discover_meta_pairs()
                 backup_claude_state._backup_zip(
@@ -63,7 +69,7 @@ class BackupPortabilityTests(unittest.TestCase):
     def test_metadata_pair_discovery_preserves_single_pair_compatibility(self):
         with tempfile.TemporaryDirectory() as root:
             sessions = os.path.join(root, "claude-code-sessions")
-            metadata = os.path.join(sessions, "account-a", "organisation-a")
+            metadata = os.path.join(sessions, ACCOUNT_A, ORGANISATION_A)
             os.makedirs(metadata)
             with mock.patch.object(backup_claude_state, "SESSIONS_BASE", sessions):
                 pairs = backup_claude_state._discover_meta_pairs()
@@ -74,8 +80,8 @@ class BackupPortabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             sessions = os.path.join(root, "claude-code-sessions")
             for account, organisation, content in (
-                ("account-a", "organisation-a", b"old\n"),
-                ("account-b", "organisation-b", b"new\n"),
+                (ACCOUNT_A, ORGANISATION_A, b'{"sessionId":"old"}\n'),
+                (ACCOUNT_B, ORGANISATION_B, b'{"sessionId":"new"}\n'),
             ):
                 metadata = os.path.join(sessions, account, organisation)
                 os.makedirs(metadata)
@@ -95,13 +101,16 @@ class BackupPortabilityTests(unittest.TestCase):
                     source_layer="desktop-metadata",
                 )
 
-            self.assertEqual(source_bytes, len(b"old\n") + len(b"new\n"))
+            self.assertEqual(
+                source_bytes,
+                len(b'{"sessionId":"old"}\n') + len(b'{"sessionId":"new"}\n'),
+            )
             with zipfile.ZipFile(destination) as archive:
                 self.assertEqual(
                     set(archive.namelist()),
                     {
-                        "account-a/organisation-a/local_same.json",
-                        "account-b/organisation-b/local_same.json",
+                        f"{ACCOUNT_A}/{ORGANISATION_A}/local_same.json",
+                        f"{ACCOUNT_B}/{ORGANISATION_B}/local_same.json",
                         "manifest.json",
                     },
                 )
@@ -111,7 +120,7 @@ class BackupPortabilityTests(unittest.TestCase):
             self.assertEqual(manifest["source_layer"], "desktop-metadata")
             self.assertEqual(
                 [(p["account_uuid"], p["organisation_uuid"]) for p in manifest["pairs"]],
-                [("account-a", "organisation-a"), ("account-b", "organisation-b")],
+                [(ACCOUNT_A, ORGANISATION_A), (ACCOUNT_B, ORGANISATION_B)],
             )
             self.assertEqual(len(manifest["files"]), 2)
             for entry in manifest["files"]:
@@ -122,14 +131,98 @@ class BackupPortabilityTests(unittest.TestCase):
                     entry["sha256"], hashlib.sha256(content).hexdigest()
                 )
 
-    def test_verification_failure_preserves_existing_final(self):
+    def test_metadata_backup_archives_only_direct_restore_compatible_files(self):
         with tempfile.TemporaryDirectory() as root:
             sessions = os.path.join(root, "claude-code-sessions")
-            metadata = os.path.join(sessions, "account-a", "organisation-a")
+            metadata = os.path.join(sessions, ACCOUNT_A, ORGANISATION_A)
+            nested = os.path.join(metadata, "nested")
+            os.makedirs(nested)
+            eligible = os.path.join(metadata, "local_one.json")
+            with open(eligible, "wb") as handle:
+                handle.write(b'{"sessionId":"one"}\n')
+            for path, content in (
+                (os.path.join(sessions, "local_root.json"), b'{"root":true}'),
+                (os.path.join(metadata, "notes.txt"), b"auxiliary"),
+                (os.path.join(metadata, "local_one.json.tmp"), b"temporary"),
+                (os.path.join(nested, "local_nested.json"), b'{"nested":true}'),
+            ):
+                with open(path, "wb") as handle:
+                    handle.write(content)
+
+            destination = os.path.join(root, "metadata.zip")
+            with mock.patch.object(backup_claude_state, "SESSIONS_BASE", sessions):
+                pairs = backup_claude_state._discover_meta_pairs()
+                backup_claude_state._backup_zip(
+                    sessions, destination, lambda _message: None, False,
+                    pairs=pairs, source_layer="desktop-metadata",
+                )
+
+            with zipfile.ZipFile(destination) as archive:
+                self.assertEqual(
+                    set(archive.namelist()),
+                    {f"{ACCOUNT_A}/{ORGANISATION_A}/local_one.json", "manifest.json"},
+                )
+
+    def test_zero_eligible_or_invalid_metadata_preserves_existing_final(self):
+        with tempfile.TemporaryDirectory() as root:
+            sessions = os.path.join(root, "claude-code-sessions")
+            metadata = os.path.join(sessions, ACCOUNT_A, ORGANISATION_A)
             os.makedirs(metadata)
             source = os.path.join(metadata, "local_one.json")
             with open(source, "wb") as handle:
-                handle.write(b"first\n")
+                handle.write(b'{"sessionId":"one"}\n')
+            destination = os.path.join(root, "metadata.zip")
+            with mock.patch.object(backup_claude_state, "SESSIONS_BASE", sessions):
+                pairs = backup_claude_state._discover_meta_pairs()
+                backup_claude_state._backup_zip(
+                    sessions, destination, lambda _message: None, False,
+                    pairs=pairs, source_layer="desktop-metadata",
+                )
+                with open(destination, "rb") as handle:
+                    prior = handle.read()
+
+                os.unlink(source)
+                with open(os.path.join(metadata, "local_one.json.tmp"), "wb") as handle:
+                    handle.write(b"temporary")
+                pairs = backup_claude_state._discover_meta_pairs()
+                with self.assertRaisesRegex(RuntimeError, "No eligible direct metadata"):
+                    backup_claude_state._backup_zip(
+                        sessions, destination, lambda _message: None, False,
+                        pairs=pairs, source_layer="desktop-metadata",
+                    )
+
+                with open(source, "wb") as handle:
+                    handle.write(b'{"value":NaN}')
+                pairs = backup_claude_state._discover_meta_pairs()
+                with self.assertRaisesRegex(RuntimeError, "metadata payload"):
+                    backup_claude_state._backup_zip(
+                        sessions, destination, lambda _message: None, False,
+                        pairs=pairs, source_layer="desktop-metadata",
+                    )
+
+            with open(destination, "rb") as handle:
+                self.assertEqual(handle.read(), prior)
+            self.assertFalse(os.path.exists(destination + ".tmp"))
+
+    def test_noncanonical_pair_refuses_before_publication(self):
+        with tempfile.TemporaryDirectory() as root:
+            sessions = os.path.join(root, "claude-code-sessions")
+            metadata = os.path.join(sessions, "not-a-uuid", ORGANISATION_A)
+            os.makedirs(metadata)
+            with open(os.path.join(metadata, "local_one.json"), "wb") as handle:
+                handle.write(b'{"sessionId":"one"}\n')
+            with mock.patch.object(backup_claude_state, "SESSIONS_BASE", sessions):
+                with self.assertRaisesRegex(RuntimeError, "canonical UUID"):
+                    backup_claude_state._discover_meta_pairs()
+
+    def test_verification_failure_preserves_existing_final(self):
+        with tempfile.TemporaryDirectory() as root:
+            sessions = os.path.join(root, "claude-code-sessions")
+            metadata = os.path.join(sessions, ACCOUNT_A, ORGANISATION_A)
+            os.makedirs(metadata)
+            source = os.path.join(metadata, "local_one.json")
+            with open(source, "wb") as handle:
+                handle.write(b'{"sessionId":"first"}\n')
             destination = os.path.join(root, "metadata.zip")
             with mock.patch.object(backup_claude_state, "SESSIONS_BASE", sessions):
                 pairs = backup_claude_state._discover_meta_pairs()
@@ -140,7 +233,7 @@ class BackupPortabilityTests(unittest.TestCase):
                 with open(destination, "rb") as handle:
                     prior_backup = handle.read()
                 with open(source, "wb") as handle:
-                    handle.write(b"second\n")
+                    handle.write(b'{"sessionId":"second"}\n')
                 with mock.patch.object(
                     backup_claude_state,
                     "_verify_backup_zip",
@@ -182,11 +275,11 @@ class BackupPortabilityTests(unittest.TestCase):
     def test_replacement_failure_preserves_existing_final(self):
         with tempfile.TemporaryDirectory() as root:
             sessions = os.path.join(root, "claude-code-sessions")
-            metadata = os.path.join(sessions, "account-a", "organisation-a")
+            metadata = os.path.join(sessions, ACCOUNT_A, ORGANISATION_A)
             os.makedirs(metadata)
             source = os.path.join(metadata, "local_one.json")
             with open(source, "wb") as handle:
-                handle.write(b"first\n")
+                handle.write(b'{"sessionId":"first"}\n')
             destination = os.path.join(root, "metadata.zip")
             with mock.patch.object(backup_claude_state, "SESSIONS_BASE", sessions):
                 pairs = backup_claude_state._discover_meta_pairs()
@@ -197,7 +290,7 @@ class BackupPortabilityTests(unittest.TestCase):
                 with open(destination, "rb") as handle:
                     prior_backup = handle.read()
                 with open(source, "wb") as handle:
-                    handle.write(b"second\n")
+                    handle.write(b'{"sessionId":"second"}\n')
                 with mock.patch.object(
                     backup_claude_state.os,
                     "replace",

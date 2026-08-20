@@ -1,0 +1,14 @@
+Claude Desktop Metadata Restore
+------------------------------------------------------------
+Archive       : metadata-backup-v2.zip
+Layout        : v2
+Pairs         : 1
+Files         : 1
+Eligible      : 1
+Identical     : 0
+Mode          : DRY RUN
+
+  pair-01  RESTORE  local_restored.json
+
+DRY RUN — no files or directories were changed.
+Re-run with --apply after fully quitting Claude Desktop.

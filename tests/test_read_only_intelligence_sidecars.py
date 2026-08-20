@@ -569,6 +569,46 @@ def test_vscode_surface_combinations_are_observational(
     assert str(tmp_path) not in rendered
 
 
+def test_vscode_cli_uses_shared_defaults_and_reports_resolved_paths(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        vscode,
+        "default_claude_sessions_index_dir",
+        lambda: "shared-claude-projects",
+    )
+    monkeypatch.setattr(
+        vscode,
+        "default_vscode_workspace_storage_dir",
+        lambda: "shared-vscode-workspaceStorage",
+    )
+
+    assert vscode.main([]) == 0
+    rendered = capsys.readouterr().out
+
+    assert "Claude sessions-index path: shared-claude-projects" in rendered
+    assert "VS Code workspaceStorage path: shared-vscode-workspaceStorage" in rendered
+
+
+def test_vscode_cli_fixture_root_still_overrides_path_arguments(tmp_path, capsys):
+    state = tmp_path / "fixture-state"
+    index = state / "projects" / "fixture-slug" / "sessions-index.json"
+    index.parent.mkdir(parents=True)
+    index.write_text("fixture index", encoding="utf-8")
+
+    assert vscode.main([
+        "--state", str(state),
+        "--projects-dir", str(tmp_path / "ignored-projects"),
+        "--workspace-dir", str(tmp_path / "ignored-workspace"),
+    ]) == 0
+    rendered = capsys.readouterr().out
+
+    assert "sessions-index.json files: 1 (13 bytes)" in rendered
+    assert "Claude sessions-index path: {}".format(state / "projects") in rendered
+    assert "ignored-projects" not in rendered
+    assert "ignored-workspace" not in rendered
+
+
 def test_vscode_bad_database_is_explicitly_partial(tmp_path):
     projects = tmp_path / "projects"
     index = projects / "slug" / "sessions-index.json"

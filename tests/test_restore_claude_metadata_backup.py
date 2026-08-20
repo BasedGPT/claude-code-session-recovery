@@ -22,11 +22,21 @@ import restore_claude_metadata_backup as restore  # noqa: E402
 
 ACCOUNT = "11111111-1111-1111-1111-111111111111"
 ORGANISATION = "22222222-2222-2222-2222-222222222222"
+BASE_ACCOUNT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+BASE_ORGANISATION = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 
 def _state(tmp_path: Path) -> Path:
     state = tmp_path / "state"
-    (state / "appdata" / "Claude" / "claude-code-sessions").mkdir(parents=True)
+    baseline = (
+        state / "appdata" / "Claude" / "claude-code-sessions"
+        / BASE_ACCOUNT / BASE_ORGANISATION / "local_existing.json"
+    )
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text(
+        '{"sessionId":"existing","cwd":"C:\\\\fixture","title":"Existing"}\n',
+        encoding="utf-8",
+    )
     (state / "projects").mkdir()
     return state
 
@@ -48,7 +58,8 @@ def _manifest_archive(
     account: str = ACCOUNT,
     organisation: str = ORGANISATION,
 ) -> Path:
-    payloads = payloads or {"local_one.json": b'{"sessionId":"one"}\n'}
+    if payloads is None:
+        payloads = {"local_one.json": b'{"sessionId":"one"}\n'}
     root = f"{account}/{organisation}"
     files = []
     for name, content in payloads.items():
@@ -131,8 +142,8 @@ def test_v2_dry_run_and_apply_are_token_bound_and_privacy_safe(
     assert target.read_bytes() == b'{"sessionId":"one"}\n'
 
 
-def test_legacy_requires_explicit_pair_and_restores_only_safe_flat_json(
-    tmp_path, monkeypatch
+def test_legacy_is_inspectable_with_explicit_pair_but_apply_is_refused(
+    tmp_path, monkeypatch, capsys
 ):
     state = _state(tmp_path)
     archive = tmp_path / "legacy.zip"
@@ -140,6 +151,16 @@ def test_legacy_requires_explicit_pair_and_restores_only_safe_flat_json(
         zipped.writestr("local_legacy.json", b'{"sessionId":"legacy"}\n')
 
     assert _run(state, archive) == 3
+    assert _run(
+        state,
+        archive,
+        "--target-account-uuid", ACCOUNT,
+        "--target-organisation-uuid", ORGANISATION,
+    ) == 0
+    dry_output = capsys.readouterr().out
+    assert "Layout        : legacy" in dry_output
+    assert "Apply unavailable: mutation requires a layout v2" in dry_output
+    assert "Re-run with --apply" not in dry_output
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
     assert _run(
         state,
@@ -147,12 +168,12 @@ def test_legacy_requires_explicit_pair_and_restores_only_safe_flat_json(
         "--target-account-uuid", ACCOUNT,
         "--target-organisation-uuid", ORGANISATION,
         "--apply",
-    ) == 0
+    ) == 3
     target = (
         state / "appdata" / "Claude" / "claude-code-sessions"
         / ACCOUNT / ORGANISATION / "local_legacy.json"
     )
-    assert target.read_bytes() == b'{"sessionId":"legacy"}\n'
+    assert not target.exists()
 
 
 def test_v2_refuses_legacy_target_override(tmp_path):
@@ -164,6 +185,61 @@ def test_v2_refuses_legacy_target_override(tmp_path):
         "--target-account-uuid", ACCOUNT,
         "--target-organisation-uuid", ORGANISATION,
     ) == 3
+
+
+def test_v2_refuses_zero_file_manifest(tmp_path):
+    state = _state(tmp_path)
+    archive = _manifest_archive(tmp_path / "empty.zip", {})
+    assert _run(state, archive) == 3
+
+
+@pytest.mark.parametrize(
+    ("status_key", "status_value", "reason"),
+    [
+        ("schema_version", "unrecognised", "live state schema is unrecognised"),
+        ("_metadata_inventory_complete", False, "live metadata inventory is incomplete"),
+        ("_transcript_inventory_complete", False, "live transcript inventory is incomplete"),
+    ],
+)
+def test_partial_or_unrecognised_state_never_emits_usable_apply_command(
+    tmp_path, monkeypatch, capsys, status_key, status_value, reason
+):
+    state = _state(tmp_path)
+    archive = _manifest_archive(tmp_path / "desktop.zip")
+    original_build_snapshot = restore.build_snapshot
+
+    def unsafe_snapshot(*args, **kwargs):
+        snapshot = original_build_snapshot(*args, **kwargs)
+        snapshot[status_key] = status_value
+        return snapshot
+
+    monkeypatch.setattr(restore, "build_snapshot", unsafe_snapshot)
+    before = _tree_fingerprint(state)
+    unsafe_token = restore.make_diagnosis_id(unsafe_snapshot(
+        str(state / "appdata" / "Claude"),
+        str(state / "projects"),
+        fixture_mode=True,
+        include_inventory_status=True,
+    ))
+
+    def run_unsafe(*extra):
+        return restore.run([
+            str(archive),
+            "--state", str(state),
+            "--diagnosis-id", unsafe_token,
+            *extra,
+        ])
+
+    assert run_unsafe() == 0
+    dry_output = capsys.readouterr().out
+    assert "Apply unavailable: {}.".format(reason) in dry_output
+    assert "Re-run with --apply" not in dry_output
+    assert _tree_fingerprint(state) == before
+
+    monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
+    assert run_unsafe("--apply") == 3
+    assert reason in capsys.readouterr().out
+    assert _tree_fingerprint(state) == before
 
 
 @pytest.mark.parametrize("kind", ["bad-zip", "hash-mismatch"])
@@ -328,7 +404,7 @@ def test_manifest_rejects_nonfinite_or_huge_json_number(tmp_path, replacement):
 
 
 def test_deeply_nested_live_metadata_never_escapes_as_traceback(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
     state = _state(tmp_path)
     live = (
@@ -342,7 +418,10 @@ def test_deeply_nested_live_metadata_never_escapes_as_traceback(
     archive = _manifest_archive(tmp_path / "desktop.zip")
 
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
-    assert _run(state, archive, "--apply") == 0
+    assert _run(state, archive, "--apply") == 3
+    output = capsys.readouterr().out
+    assert "live metadata inventory is incomplete" in output
+    assert "Traceback" not in output
 
 
 @pytest.mark.parametrize("payload", [b"not-json", b"\xff", b"[]"])
@@ -781,7 +860,9 @@ def test_windows_rollback_deletes_created_target_through_retained_handle(
     assert _run(state, archive, "--apply") == 3
     sessions = state / "appdata" / "Claude" / "claude-code-sessions"
     assert bound_deletes == 1
-    assert list(sessions.rglob("local_*.json")) == []
+    assert not (sessions / ACCOUNT / ORGANISATION / "local_one.json").exists()
+    assert not (sessions / ACCOUNT / ORGANISATION / "local_two.json").exists()
+    assert (sessions / BASE_ACCOUNT / BASE_ORGANISATION / "local_existing.json").is_file()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="non-Windows portability contract")
@@ -1008,7 +1089,9 @@ def test_publication_failure_removes_every_file_created_by_this_run(
     monkeypatch.setattr(restore.os, "link", fail_second_publication)
     assert _run(state, archive, "--apply") == 3
     sessions = state / "appdata" / "Claude" / "claude-code-sessions"
-    assert list(sessions.rglob("local_*.json")) == []
+    assert not (sessions / ACCOUNT / ORGANISATION / "local_one.json").exists()
+    assert not (sessions / ACCOUNT / ORGANISATION / "local_two.json").exists()
+    assert (sessions / BASE_ACCOUNT / BASE_ORGANISATION / "local_existing.json").is_file()
     assert list(sessions.rglob(".r-*")) == []
 
 

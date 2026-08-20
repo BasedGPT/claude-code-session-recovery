@@ -100,3 +100,75 @@ def test_interpreter_never_prints_transcript_text(tmp_path, capsys):
 
     assert transcript_files.cache_metadata(path)[0] == "Private Client Project"
     assert capsys.readouterr().out == ""
+
+
+def _write_inventory_transcripts(root, slug_count=1, files_per_slug=1):
+    paths = []
+    sequence = 0
+    for slug_index in range(slug_count):
+        slug = root / f"slug-{slug_index:02d}"
+        slug.mkdir(parents=True, exist_ok=True)
+        for _file_index in range(files_per_slug):
+            sequence += 1
+            session_id = f"{sequence:08d}-0000-0000-0000-{sequence:012d}"
+            path = slug / f"{session_id}.jsonl"
+            path.write_text("{}\n", encoding="utf-8")
+            paths.append(path)
+    return paths
+
+
+@pytest.mark.parametrize(
+    ("cap_name", "error_code"),
+    [
+        ("MAX_PROJECT_DIRECTORY_ENTRIES", "projects_entry_cap_exceeded"),
+        ("MAX_TRANSCRIPT_SLUG_DIRECTORIES", "slug_directory_cap_exceeded"),
+    ],
+)
+def test_transcript_directory_caps_are_partial_and_repeatable(
+    tmp_path, monkeypatch, cap_name, error_code
+):
+    _write_inventory_transcripts(tmp_path, slug_count=3)
+    monkeypatch.setattr(transcript_files, cap_name, 2)
+
+    first = transcript_files.build_transcript_path_inventory(str(tmp_path))
+    second = transcript_files.build_transcript_path_inventory(str(tmp_path))
+
+    assert first == second
+    assert first.status == "partial"
+    assert first.physical_count == 2
+    assert {error.code for error in first.errors} == {error_code}
+
+
+@pytest.mark.parametrize(
+    ("cap_name", "error_code"),
+    [
+        ("MAX_TRANSCRIPT_ENTRIES_PER_SLUG", "slug_entry_cap_exceeded"),
+        ("MAX_TRANSCRIPT_FILES", "transcript_file_cap_exceeded"),
+        ("MAX_TRANSCRIPT_PATHS", "transcript_path_cap_exceeded"),
+    ],
+)
+def test_transcript_file_and_path_caps_retain_a_lossless_bounded_prefix(
+    tmp_path, monkeypatch, cap_name, error_code
+):
+    _write_inventory_transcripts(tmp_path, files_per_slug=3)
+    monkeypatch.setattr(transcript_files, cap_name, 2)
+
+    inventory = transcript_files.build_transcript_path_inventory(str(tmp_path))
+
+    assert inventory.status == "partial"
+    assert inventory.physical_count == 2
+    assert sum(len(paths) for paths in inventory.by_session_id.values()) == 2
+    assert {error.code for error in inventory.errors} == {error_code}
+
+
+def test_transcript_global_traversal_cap_is_partial(tmp_path, monkeypatch):
+    _write_inventory_transcripts(tmp_path, files_per_slug=2)
+    monkeypatch.setattr(transcript_files, "MAX_TRANSCRIPT_TRAVERSAL_ENTRIES", 1)
+
+    inventory = transcript_files.build_transcript_path_inventory(str(tmp_path))
+
+    assert inventory.status == "partial"
+    assert inventory.physical_count == 0
+    assert {error.code for error in inventory.errors} == {
+        "transcript_traversal_cap_exceeded"
+    }

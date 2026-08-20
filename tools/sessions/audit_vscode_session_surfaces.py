@@ -10,14 +10,16 @@ import argparse
 import hashlib
 import os
 import pathlib
-import platform
 import sqlite3
 import sys
 import tempfile
 
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
-from platform_support import default_claude_paths  # noqa: E402
+from platform_support import (  # noqa: E402
+    default_claude_sessions_index_dir,
+    default_vscode_workspace_storage_dir,
+)
 from sidecar_common import (  # noqa: E402
     ScanState,
     bounded_directory_entries,
@@ -37,19 +39,6 @@ COPY_CHUNK_BYTES = 64 * 1024
 
 class DatabaseOpcodeLimit(RuntimeError):
     """Raised when SQLite exceeds the configured read-operation budget."""
-
-
-def default_workspace_dir():
-    if platform.system() == "Darwin":
-        return os.path.expanduser(
-            "~/Library/Application Support/Code/User/workspaceStorage"
-        )
-    if platform.system() == "Linux":
-        return os.path.expanduser("~/.config/Code/User/workspaceStorage")
-    return os.path.join(
-        os.environ.get("APPDATA", os.path.expanduser("~")),
-        "Code", "User", "workspaceStorage",
-    )
 
 
 def _scan_projects(projects_dir, state, max_directory_entries, max_slugs):
@@ -482,8 +471,10 @@ def audit_surfaces(projects_dir, workspace_dir, *, max_directory_entries=20000,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--state", help="Fixture state root")
-    parser.add_argument("--projects-dir", default=default_claude_paths()[1])
-    parser.add_argument("--workspace-dir", default=default_workspace_dir())
+    parser.add_argument("--projects-dir", default=default_claude_sessions_index_dir())
+    parser.add_argument(
+        "--workspace-dir", default=default_vscode_workspace_storage_dir()
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--max-directory-entries", type=int, default=20000)
     parser.add_argument("--max-slugs", type=int, default=10000)
@@ -512,6 +503,8 @@ def main(argv=None):
     if args.json:
         write_json(result)
     else:
+        print("Claude sessions-index path: {}".format(projects_dir))
+        print("VS Code workspaceStorage path: {}".format(workspace_dir))
         print("VS Code session surfaces audit: {}".format(result["status"]))
         print("Transcript-bearing slugs: {}".format(
             result["transcript_bearing_slug_count"]

@@ -1,0 +1,7 @@
+DIAGNOSE -- Claude Code Desktop Session Recovery Tools
+------------------------------------------------------------
+Diagnosis ID : 36d15243
+Metadata     : 1 files  (1 with cliSessionId,  0 missing)
+JSONL files  : 1
+
+State looks healthy. No known broken patterns matched.

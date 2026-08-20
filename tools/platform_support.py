@@ -43,13 +43,29 @@ def default_claude_appdata_dir():
 
 def default_claude_paths():
     """Return ``(desktop_data_dir, transcript_projects_dir)``."""
-    if platform.system() == "Darwin":
-        projects_dir = os.path.expanduser("~/.claude/projects")
-    elif platform.system() == "Linux":
-        projects_dir = os.path.expanduser("~/.claude/projects")
-    else:
-        projects_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects")
-    return default_claude_appdata_dir(), projects_dir
+    return default_claude_appdata_dir(), default_claude_sessions_index_dir()
+
+
+def default_claude_sessions_index_dir():
+    """Return the Claude project root containing ``sessions-index.json`` files."""
+    if platform.system() in ("Darwin", "Linux"):
+        return os.path.expanduser("~/.claude/projects")
+    return os.path.join(os.path.expanduser("~"), ".claude", "projects")
+
+
+def default_vscode_workspace_storage_dir():
+    """Return VS Code's platform-appropriate ``workspaceStorage`` directory."""
+    system = platform.system()
+    if system == "Darwin":
+        return os.path.expanduser(
+            "~/Library/Application Support/Code/User/workspaceStorage"
+        )
+    if system == "Linux":
+        return os.path.expanduser("~/.config/Code/User/workspaceStorage")
+    return os.path.join(
+        os.environ.get("APPDATA", os.path.expanduser("~")),
+        "Code", "User", "workspaceStorage",
+    )
 
 
 def default_groupings_store():

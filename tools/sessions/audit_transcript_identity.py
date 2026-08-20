@@ -14,48 +14,26 @@ from platform_support import default_claude_paths  # noqa: E402
 from session_metadata import build_metadata_path_inventory  # noqa: E402
 from session_state import slug_encode  # noqa: E402
 from transcript_audit import read_first_record_field, redact_user_home  # noqa: E402
+from transcript_files import build_transcript_path_inventory  # noqa: E402
 
 
 def _projects_transcripts(projects_dir):
-    try:
-        with os.scandir(projects_dir) as entries:
-            slugs = sorted(entries, key=lambda entry: entry.name)
-    except OSError as exc:
-        raise ValueError("projects scan root is unavailable") from exc
-    paths = []
-    errors = []
-    for slug in slugs:
-        try:
-            is_directory = slug.is_dir()
-        except OSError:
-            errors.append("slug_stat_failed")
-            continue
-        if not is_directory:
-            continue
-        try:
-            with os.scandir(slug.path) as entries:
-                transcripts = sorted(entries, key=lambda entry: entry.name)
-        except OSError:
-            errors.append("slug_list_failed")
-            continue
-        for entry in transcripts:
-            if not entry.name.endswith(".jsonl"):
-                continue
-            try:
-                is_file = entry.is_file()
-            except OSError:
-                errors.append("transcript_stat_failed")
-                continue
-            if not is_file:
-                errors.append("transcript_not_regular_file")
-                continue
-            session_id = os.path.splitext(entry.name)[0]
-            paths.append((session_id, os.path.abspath(entry.path)))
-    scan_errors = [
-        {"reference": f"scan-entry-{index:04d}", "code": code}
-        for index, code in enumerate(errors, start=1)
+    if not os.path.exists(projects_dir):
+        raise ValueError("projects scan root is unavailable")
+    inventory = build_transcript_path_inventory(
+        projects_dir,
+        session_id_is_valid=lambda _session_id: True,
+    )
+    paths = [
+        (session_id, path)
+        for session_id, session_paths in inventory.by_session_id.items()
+        for path in session_paths
     ]
-    return paths, scan_errors
+    scan_errors = [
+        {"reference": f"scan-entry-{index:04d}", "code": error.code}
+        for index, error in enumerate(inventory.errors, start=1)
+    ]
+    return paths, scan_errors, inventory.is_complete
 
 
 def _metadata_records(appdata_claude_dir):
@@ -73,7 +51,7 @@ def _metadata_records(appdata_claude_dir):
         {"reference": error.reference, "code": error.code}
         for error in inventory.errors
     ]
-    return records, errors
+    return records, errors, inventory.is_complete
 
 
 def _is_worktree_path(value):
@@ -106,7 +84,9 @@ def audit_identity(projects_dir, appdata_claude_dir=None, explicit_cwds=()):
     to redact them.  They are never printed by this module.
     """
     explicit_cwds = tuple(explicit_cwds)
-    discovered, scan_errors = _projects_transcripts(projects_dir)
+    discovered, scan_errors, transcript_inventory_complete = _projects_transcripts(
+        projects_dir
+    )
     physical = []
     for session_id, path in discovered:
         slug = os.path.basename(os.path.dirname(path))
@@ -121,7 +101,7 @@ def audit_identity(projects_dir, appdata_claude_dir=None, explicit_cwds=()):
         item["reference"] = f"transcript-{index:04d}"
 
     errors = list(scan_errors)
-    project_discovery_partial = bool(scan_errors)
+    project_discovery_partial = not transcript_inventory_complete
     bounded_field_references = []
     for item in physical:
         field_read = read_first_record_field(item["path"], "cwd")
@@ -195,7 +175,9 @@ def audit_identity(projects_dir, appdata_claude_dir=None, explicit_cwds=()):
     for index, group in enumerate(resolved_split_groups, start=1):
         group["reference"] = f"resolved-path-split-{index:04d}"
 
-    metadata, metadata_errors = _metadata_records(appdata_claude_dir)
+    metadata, metadata_errors, metadata_inventory_complete = _metadata_records(
+        appdata_claude_dir
+    )
     errors.extend(metadata_errors)
     metadata_ambiguous = 0
     cwd_mismatches = 0
@@ -244,7 +226,10 @@ def audit_identity(projects_dir, appdata_claude_dir=None, explicit_cwds=()):
             "transcript_references": [item["reference"] for item in matches],
         })
 
-    if project_discovery_partial:
+    identity_analysis_suppressed = (
+        project_discovery_partial or not metadata_inventory_complete
+    )
+    if identity_analysis_suppressed:
         duplicate_group_records = []
         slug_collision_groups = []
         resolved_split_groups = []
@@ -287,7 +272,7 @@ def audit_identity(projects_dir, appdata_claude_dir=None, explicit_cwds=()):
         {"kind": "explicit_cwd_slug_mismatch", "reference": row["reference"]}
         for row in explicit_rows if row["cwd_slug_mismatch"]
     )
-    if not project_discovery_partial:
+    if not identity_analysis_suppressed:
         findings.extend(
             {"kind": "bounded_identity_parse", "reference": reference}
             for reference in bounded_field_references
@@ -296,12 +281,15 @@ def audit_identity(projects_dir, appdata_claude_dir=None, explicit_cwds=()):
     errors.sort(key=lambda error: (error["reference"], error["code"]))
     status = "partial" if errors else "bounded" if bounded_field_references else "complete"
 
-    return {
-        "schema_version": "transcript-identity-audit-v1",
-        "read_only": True,
-        "status": status,
-        "_identity_analysis_suppressed": project_discovery_partial,
-        "summary": {
+    if identity_analysis_suppressed:
+        summary = {
+            "retained_transcript_count": len(physical),
+            "retained_metadata_record_count": len(metadata),
+            "explicit_cwd_input_count": len(explicit_cwds),
+            "scan_error_count": len(errors),
+        }
+    else:
+        summary = {
             "physical_transcript_count": len(physical),
             "unique_session_id_count": len(by_session),
             "duplicate_session_id_group_count": len(duplicate_group_records),
@@ -314,10 +302,18 @@ def audit_identity(projects_dir, appdata_claude_dir=None, explicit_cwds=()):
             "explicit_cwd_mismatch_count": explicit_cwd_mismatches,
             "scan_error_count": len(errors),
             "bounded_field_read_count": len(bounded_field_references),
-        },
+        }
+    reported_transcripts = [] if identity_analysis_suppressed else physical
+
+    return {
+        "schema_version": "transcript-identity-audit-v1",
+        "read_only": True,
+        "status": status,
+        "_identity_analysis_suppressed": identity_analysis_suppressed,
+        "summary": summary,
         "findings": findings,
         "errors": errors,
-        "transcripts": physical,
+        "transcripts": reported_transcripts,
         "duplicate_groups": duplicate_group_records,
         "slug_collision_groups": slug_collision_groups,
         "resolved_split_groups": resolved_split_groups,
@@ -392,6 +388,15 @@ def _print_human(result, *, include_paths=False, details=False, limit=30):
     print("Transcript identity audit (read-only)")
     print("Status: {}".format(result["status"]))
     print("Scan errors: {}".format(summary.get("scan_error_count", 0)))
+    if result.get("_identity_analysis_suppressed"):
+        for key in (
+            "retained_transcript_count", "retained_metadata_record_count",
+            "explicit_cwd_input_count",
+        ):
+            print("{}: {}".format(key, summary[key]))
+        for error in result["errors"]:
+            print("  {} [{}]".format(error["reference"], error["code"]))
+        return
     for key in (
         "physical_transcript_count", "unique_session_id_count",
         "duplicate_session_id_group_count", "observed_slug_collision_group_count",
@@ -399,10 +404,6 @@ def _print_human(result, *, include_paths=False, details=False, limit=30):
         "cwd_slug_mismatch_count", "worktree_key_mismatch_candidate_count",
     ):
         print("{}: {}".format(key, summary[key]))
-    if result.get("_identity_analysis_suppressed"):
-        for error in result["errors"]:
-            print("  {} [{}]".format(error["reference"], error["code"]))
-        return
     print("Findings: {}".format(len(result["findings"])))
     for finding in result["findings"][:limit]:
         print("  {} [{}]".format(finding["reference"], finding["kind"]))

@@ -58,6 +58,29 @@ def test_snapshot_preserves_metadata_transcript_link_counts(tmp_path):
     assert session_state.make_diagnosis_id(snapshot) == session_state.make_diagnosis_id(snapshot)
 
 
+def test_inventory_status_is_opt_in_and_does_not_change_diagnosis_token(tmp_path):
+    _write_state(tmp_path)
+    appdata = tmp_path / "appdata" / "Claude"
+    projects = tmp_path / "projects"
+    public_snapshot = session_state.build_snapshot(
+        str(appdata), str(projects), fixture_mode=True
+    )
+    guarded_snapshot = session_state.build_snapshot(
+        str(appdata),
+        str(projects),
+        fixture_mode=True,
+        include_inventory_status=True,
+    )
+
+    assert "_metadata_inventory_complete" not in public_snapshot
+    assert "_transcript_inventory_complete" not in public_snapshot
+    assert guarded_snapshot["_metadata_inventory_complete"] is True
+    assert guarded_snapshot["_transcript_inventory_complete"] is True
+    assert session_state.make_diagnosis_id(guarded_snapshot) == session_state.make_diagnosis_id(
+        public_snapshot
+    )
+
+
 def test_broad_audit_fields_do_not_change_diagnosis_token(tmp_path):
     _write_state(tmp_path)
     appdata = tmp_path / "appdata" / "Claude"

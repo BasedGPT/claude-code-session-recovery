@@ -1,13 +1,14 @@
 """Shared layout-v2 contract for Claude Desktop metadata archives.
 
-This module validates only the portable manifest and archive inventory.  Zip
-envelope limits, strict JSON decoding, payload JSON validation, and publication
+This module owns the portable manifest/inventory contract, archive hard caps,
+and bounded producer-discovery budget. Zip envelope reading and publication
 policy remain the responsibility of the backup/restore command adapters.
 """
 
 from dataclasses import dataclass
 import json
 import math
+import os
 from pathlib import PurePosixPath
 import re
 import unicodedata
@@ -16,9 +17,20 @@ import unicodedata
 LAYOUT_VERSION = 2
 SOURCE_LAYER = "desktop-metadata"
 MANIFEST_NAME = "manifest.json"
+MAX_ARCHIVE_PAYLOAD_FILES = 10_000
+MAX_ARCHIVE_PAYLOAD_BYTES = 512 * 1024 * 1024
+MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_METADATA_FILE_BYTES = 16 * 1024 * 1024
 MAX_JSON_INTEGER_DIGITS = 4096
 MAX_JSON_DEPTH = 256
+
+# Discovery is allowed to inspect more auxiliary structure than can be
+# published, but every retained and traversed dimension remains finite.
+MAX_DISCOVERY_ENTRIES_PER_DIRECTORY = 100_000
+MAX_DISCOVERY_TOTAL_ENTRIES = 250_000
+MAX_DISCOVERY_DIRECTORIES = 100_000
+MAX_DISCOVERY_RETAINED_PATHS = 100_000
+MAX_DISCOVERY_METADATA_PAIRS = 10_000
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(
@@ -37,6 +49,111 @@ WINDOWS_RESERVED_NAMES = {
 
 class MetadataArchiveFormatError(ValueError):
     """The manifest cannot describe a compatible v2 metadata archive."""
+
+
+@dataclass(frozen=True)
+class ArchiveDiscoveryLimits:
+    """Finite producer discovery limits, with optional lower test limits."""
+
+    max_payload_files: int = MAX_ARCHIVE_PAYLOAD_FILES
+    max_payload_bytes: int = MAX_ARCHIVE_PAYLOAD_BYTES
+    max_metadata_file_bytes: int = MAX_METADATA_FILE_BYTES
+    max_entries_per_directory: int = MAX_DISCOVERY_ENTRIES_PER_DIRECTORY
+    max_total_entries: int = MAX_DISCOVERY_TOTAL_ENTRIES
+    max_directories: int = MAX_DISCOVERY_DIRECTORIES
+    max_retained_paths: int = MAX_DISCOVERY_RETAINED_PATHS
+    max_metadata_pairs: int = MAX_DISCOVERY_METADATA_PAIRS
+
+    def __post_init__(self):
+        bounded = (
+            (self.max_payload_files, MAX_ARCHIVE_PAYLOAD_FILES),
+            (self.max_payload_bytes, MAX_ARCHIVE_PAYLOAD_BYTES),
+            (self.max_metadata_file_bytes, MAX_METADATA_FILE_BYTES),
+            (self.max_entries_per_directory, MAX_DISCOVERY_ENTRIES_PER_DIRECTORY),
+            (self.max_total_entries, MAX_DISCOVERY_TOTAL_ENTRIES),
+            (self.max_directories, MAX_DISCOVERY_DIRECTORIES),
+            (self.max_retained_paths, MAX_DISCOVERY_RETAINED_PATHS),
+            (self.max_metadata_pairs, MAX_DISCOVERY_METADATA_PAIRS),
+        )
+        if any(
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 1 <= value <= hard
+            for value, hard in bounded
+        ):
+            raise ValueError(
+                "archive discovery limits must be positive and no higher than hard caps"
+            )
+
+
+class ArchiveDiscoveryBudget:
+    """Bound directory enumeration and source paths before zip construction."""
+
+    def __init__(self, limits: ArchiveDiscoveryLimits | None = None):
+        self.limits = limits or ArchiveDiscoveryLimits()
+        self.directories = 0
+        self.total_entries = 0
+        self.retained_paths = 0
+        self.metadata_pairs = 0
+        self.payload_files = 0
+        self.payload_bytes = 0
+
+    def scan_directory(self, path: str):
+        self.directories += 1
+        if self.directories > self.limits.max_directories:
+            raise MetadataArchiveFormatError("backup discovery exceeds the directory cap")
+        entries = []
+        try:
+            with os.scandir(path) as iterator:
+                for entry in iterator:
+                    if len(entries) >= self.limits.max_entries_per_directory:
+                        raise MetadataArchiveFormatError(
+                            "backup discovery exceeds the per-directory entry cap"
+                        )
+                    self.total_entries += 1
+                    if self.total_entries > self.limits.max_total_entries:
+                        raise MetadataArchiveFormatError(
+                            "backup discovery exceeds the total-entry cap"
+                        )
+                    entries.append(entry)
+        except MetadataArchiveFormatError:
+            raise
+        except OSError as exc:
+            raise MetadataArchiveFormatError(
+                "backup source directory cannot be enumerated safely"
+            ) from exc
+        return tuple(sorted(entries, key=lambda entry: entry.name))
+
+    def retain_metadata_pair(self):
+        self.retain_metadata_pairs(1)
+
+    def retain_metadata_pairs(self, count: int):
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise MetadataArchiveFormatError("backup metadata-pair count is invalid")
+        self.metadata_pairs += count
+        if self.metadata_pairs > self.limits.max_metadata_pairs:
+            raise MetadataArchiveFormatError("backup discovery exceeds the metadata-pair cap")
+        self._retain_paths(count)
+
+    def retain_payload_file(self, size: int, *, metadata: bool):
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise MetadataArchiveFormatError("backup source file size is invalid")
+        if metadata and size > self.limits.max_metadata_file_bytes:
+            raise MetadataArchiveFormatError(
+                "metadata payload exceeds the bounded size limit"
+            )
+        self.payload_files += 1
+        if self.payload_files > self.limits.max_payload_files:
+            raise MetadataArchiveFormatError("backup source exceeds the payload-file cap")
+        self.payload_bytes += size
+        if self.payload_bytes > self.limits.max_payload_bytes:
+            raise MetadataArchiveFormatError("backup source exceeds the payload-byte cap")
+        self._retain_paths(1)
+
+    def _retain_paths(self, count: int):
+        self.retained_paths += count
+        if self.retained_paths > self.limits.max_retained_paths:
+            raise MetadataArchiveFormatError("backup discovery exceeds the retained-path cap")
 
 
 @dataclass(frozen=True)
@@ -170,6 +287,19 @@ def validate_v2_metadata_manifest(
     archive_sizes: dict[str, int],
 ) -> MetadataArchiveManifest:
     """Validate the exact shared v2 metadata manifest/inventory contract."""
+    if len(archive_sizes) > MAX_ARCHIVE_PAYLOAD_FILES:
+        raise MetadataArchiveFormatError("archive exceeds the payload-file cap")
+    payload_total = 0
+    for size in archive_sizes.values():
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise MetadataArchiveFormatError("archive payload size is invalid")
+        if size > MAX_METADATA_FILE_BYTES:
+            raise MetadataArchiveFormatError(
+                "metadata payload exceeds the bounded size limit"
+            )
+        payload_total += size
+        if payload_total > MAX_ARCHIVE_PAYLOAD_BYTES:
+            raise MetadataArchiveFormatError("archive exceeds the payload-byte cap")
     if not isinstance(manifest, dict):
         raise MetadataArchiveFormatError("manifest root must be an object")
     if set(manifest) != {"layout_version", "source_layer", "pairs", "files"}:
@@ -183,6 +313,8 @@ def validate_v2_metadata_manifest(
     raw_files = manifest.get("files")
     if not isinstance(raw_pairs, list) or not raw_pairs:
         raise MetadataArchiveFormatError("manifest must declare at least one metadata pair")
+    if len(raw_pairs) > MAX_DISCOVERY_METADATA_PAIRS:
+        raise MetadataArchiveFormatError("manifest exceeds the metadata-pair cap")
     if not isinstance(raw_files, list) or not raw_files:
         raise MetadataArchiveFormatError("manifest must declare at least one metadata file")
 

@@ -13,6 +13,8 @@ import os
 
 SCHEMA_VERSION = "transcript-integrity-audit-v1"
 DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024
+DEFAULT_MAX_FILE_BYTES = 512 * 1024 * 1024
+DEFAULT_MAX_LINES_PER_FILE = 2_000_000
 DEFAULT_MAX_NODES_PER_FILE = 1_000_000
 _READ_CHUNK_BYTES = 64 * 1024
 
@@ -32,6 +34,17 @@ class BoundedLine:
     nul_count: int
 
 
+@dataclass
+class BoundedReadState:
+    """Mutable termination facts for one bounded binary scan."""
+
+    bytes_read: int = 0
+    lines_yielded: int = 0
+    reached_eof: bool = False
+    byte_budget_exhausted: bool = False
+    line_budget_exhausted: bool = False
+
+
 def _positive_limit(value, name):
     try:
         value = int(value)
@@ -42,14 +55,32 @@ def _positive_limit(value, name):
     return value
 
 
-def iter_bounded_binary_lines(handle, max_line_bytes=DEFAULT_MAX_LINE_BYTES):
+def iter_bounded_binary_lines(
+    handle,
+    max_line_bytes=None,
+    *,
+    max_total_bytes=None,
+    max_lines=None,
+    state=None,
+):
     """Yield :class:`BoundedLine` values without retaining oversized lines.
 
-    The complete line is consumed so subsequent records stay aligned.  Only a
-    prefix up to ``max_line_bytes`` is retained for decoding and JSON parsing.
-    Byte and NUL facts include the consumed remainder.
+    At most ``max_total_bytes`` and ``max_lines`` are consumed.  A line may be
+    drained only while both budgets remain, so a newline-free or growing input
+    cannot make the iterator scan indefinitely.  The caller-owned ``state``
+    records which termination boundary fired without exposing input content.
     """
+    if max_line_bytes is None:
+        max_line_bytes = DEFAULT_MAX_LINE_BYTES
+    if max_total_bytes is None:
+        max_total_bytes = DEFAULT_MAX_FILE_BYTES
+    if max_lines is None:
+        max_lines = DEFAULT_MAX_LINES_PER_FILE
     max_line_bytes = _positive_limit(max_line_bytes, "max_line_bytes")
+    max_total_bytes = _positive_limit(max_total_bytes, "max_total_bytes")
+    max_lines = _positive_limit(max_lines, "max_lines")
+    if state is None:
+        state = BoundedReadState()
     retained = bytearray()
     byte_count = 0
     nul_count = 0
@@ -57,13 +88,28 @@ def iter_bounded_binary_lines(handle, max_line_bytes=DEFAULT_MAX_LINE_BYTES):
     saw_line_bytes = False
 
     while True:
-        chunk = handle.read(_READ_CHUNK_BYTES)
+        if state.lines_yielded >= max_lines:
+            state.line_budget_exhausted = True
+            return
+        remaining_bytes = max_total_bytes - state.bytes_read
+        if remaining_bytes <= 0:
+            state.byte_budget_exhausted = True
+            if saw_line_bytes:
+                yield BoundedLine(
+                    bytes(retained), byte_count, True, bool(nul_count), nul_count
+                )
+                state.lines_yielded += 1
+            return
+        chunk = handle.read(min(_READ_CHUNK_BYTES, remaining_bytes))
         if not chunk:
+            state.reached_eof = True
             if saw_line_bytes:
                 yield BoundedLine(
                     bytes(retained), byte_count, truncated, bool(nul_count), nul_count
                 )
+                state.lines_yielded += 1
             return
+        state.bytes_read += len(chunk)
 
         start = 0
         while start < len(chunk):
@@ -86,12 +132,25 @@ def iter_bounded_binary_lines(handle, max_line_bytes=DEFAULT_MAX_LINE_BYTES):
             yield BoundedLine(
                 bytes(retained), byte_count, truncated, bool(nul_count), nul_count
             )
+            state.lines_yielded += 1
             retained.clear()
             byte_count = 0
             nul_count = 0
             truncated = False
             saw_line_bytes = False
             start = end
+            if state.lines_yielded >= max_lines:
+                state.line_budget_exhausted = True
+                return
+
+        if state.bytes_read >= max_total_bytes:
+            state.byte_budget_exhausted = True
+            if saw_line_bytes:
+                yield BoundedLine(
+                    bytes(retained), byte_count, True, bool(nul_count), nul_count
+                )
+                state.lines_yielded += 1
+            return
 
 
 def _empty_file_stats(path, reference):
@@ -123,6 +182,8 @@ def _empty_file_stats(path, reference):
         "cycle_node_count": 0,
         "node_count": 0,
         "bounded": False,
+        "partial": False,
+        "bytes_read": 0,
         "errors": [],
     }
 
@@ -258,11 +319,25 @@ def audit_transcript_file(
     path,
     *,
     reference="transcript-0001",
-    max_line_bytes=DEFAULT_MAX_LINE_BYTES,
-    max_nodes_per_file=DEFAULT_MAX_NODES_PER_FILE,
+    max_line_bytes=None,
+    max_file_bytes=None,
+    max_lines_per_file=None,
+    max_nodes_per_file=None,
 ):
     """Audit one path without exposing record content."""
+    if max_line_bytes is None:
+        max_line_bytes = DEFAULT_MAX_LINE_BYTES
+    if max_file_bytes is None:
+        max_file_bytes = DEFAULT_MAX_FILE_BYTES
+    if max_lines_per_file is None:
+        max_lines_per_file = DEFAULT_MAX_LINES_PER_FILE
+    if max_nodes_per_file is None:
+        max_nodes_per_file = DEFAULT_MAX_NODES_PER_FILE
     max_line_bytes = _positive_limit(max_line_bytes, "max_line_bytes")
+    max_file_bytes = _positive_limit(max_file_bytes, "max_file_bytes")
+    max_lines_per_file = _positive_limit(
+        max_lines_per_file, "max_lines_per_file"
+    )
     max_nodes_per_file = _positive_limit(max_nodes_per_file, "max_nodes_per_file")
     path = os.path.abspath(os.fspath(path))
     stats = _empty_file_stats(path, reference)
@@ -285,6 +360,11 @@ def audit_transcript_file(
     if stats["bytes"] == 0:
         stats["state"] = "empty"
         return stats
+    if stats["bytes"] > max_file_bytes:
+        stats["bounded"] = True
+        stats["partial"] = True
+        stats["errors"] = ["byte_budget_exceeded"]
+        return stats
 
     uuid_values = Counter()
     message_values = Counter()
@@ -293,9 +373,16 @@ def audit_transcript_file(
     graph_bounded = False
     parent_reference_count = 0
     parent_references_truncated = 0
+    read_state = BoundedReadState()
     try:
         with open(path, "rb") as handle:
-            for bounded_line in iter_bounded_binary_lines(handle, max_line_bytes):
+            for bounded_line in iter_bounded_binary_lines(
+                handle,
+                max_line_bytes,
+                max_total_bytes=max_file_bytes,
+                max_lines=max_lines_per_file,
+                state=read_state,
+            ):
                 stats["physical_lines"] += 1
                 if bounded_line.truncated:
                     graph_bounded = True
@@ -315,7 +402,7 @@ def audit_transcript_file(
                     continue
                 try:
                     record = json.loads(text)
-                except ValueError:
+                except (ValueError, RecursionError):
                     stats["malformed_json"] += 1
                     continue
                 if not isinstance(record, dict):
@@ -363,6 +450,15 @@ def audit_transcript_file(
         stats["state"] = "unreadable"
         stats["errors"] = ["read_failed"]
         return stats
+    stats["bytes_read"] = read_state.bytes_read
+    if read_state.byte_budget_exhausted:
+        stats["bounded"] = True
+        stats["partial"] = True
+        stats["errors"].append("byte_budget_exceeded")
+    if read_state.line_budget_exhausted:
+        stats["bounded"] = True
+        stats["partial"] = True
+        stats["errors"].append("line_budget_exceeded")
 
     graph = _graph_facts(
         uuid_values,
@@ -382,11 +478,25 @@ def audit_transcript_file(
 def audit_transcript_paths(
     paths,
     *,
-    max_line_bytes=DEFAULT_MAX_LINE_BYTES,
-    max_nodes_per_file=DEFAULT_MAX_NODES_PER_FILE,
+    max_line_bytes=None,
+    max_file_bytes=None,
+    max_lines_per_file=None,
+    max_nodes_per_file=None,
 ):
     """Audit sorted, de-duplicated paths and return a JSON-safe result."""
+    if max_line_bytes is None:
+        max_line_bytes = DEFAULT_MAX_LINE_BYTES
+    if max_file_bytes is None:
+        max_file_bytes = DEFAULT_MAX_FILE_BYTES
+    if max_lines_per_file is None:
+        max_lines_per_file = DEFAULT_MAX_LINES_PER_FILE
+    if max_nodes_per_file is None:
+        max_nodes_per_file = DEFAULT_MAX_NODES_PER_FILE
     max_line_bytes = _positive_limit(max_line_bytes, "max_line_bytes")
+    max_file_bytes = _positive_limit(max_file_bytes, "max_file_bytes")
+    max_lines_per_file = _positive_limit(
+        max_lines_per_file, "max_lines_per_file"
+    )
     max_nodes_per_file = _positive_limit(max_nodes_per_file, "max_nodes_per_file")
     unique_paths = sorted({os.path.abspath(os.fspath(path)) for path in paths})
     files = [
@@ -394,6 +504,8 @@ def audit_transcript_paths(
             path,
             reference=f"transcript-{index:04d}",
             max_line_bytes=max_line_bytes,
+            max_file_bytes=max_file_bytes,
+            max_lines_per_file=max_lines_per_file,
             max_nodes_per_file=max_nodes_per_file,
         )
         for index, path in enumerate(unique_paths, start=1)
@@ -416,6 +528,7 @@ def audit_transcript_paths(
         "files_empty": sum(file["state"] == "empty" for file in files),
         "files_unreadable": sum(file["state"] == "unreadable" for file in files),
         "bounded_files": sum(file["bounded"] for file in files),
+        "partial_files": sum(file["partial"] for file in files),
     }
     summary.update({
         field: sum(file[field] for file in files)
@@ -431,7 +544,7 @@ def audit_transcript_paths(
         "unreadable_file_count": summary["files_unreadable"],
     })
     bounded = bool(summary["bounded_files"])
-    partial = bool(summary["files_unreadable"])
+    partial = bool(summary["files_unreadable"] or summary["partial_files"])
     status = "partial" if partial else "bounded" if bounded else "complete"
     findings = []
     for file in files:
@@ -463,12 +576,14 @@ def audit_transcript_paths(
         for file in files
         for code in file.get("errors", ())
     ]
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "read_only": True,
         "status": status,
         "limits": {
             "max_line_bytes": max_line_bytes,
+            "max_file_bytes": max_file_bytes,
+            "max_lines_per_file": max_lines_per_file,
             "max_nodes_per_file": max_nodes_per_file,
         },
         "summary": summary,
@@ -476,24 +591,91 @@ def audit_transcript_paths(
         "errors": errors,
         "files": files,
     }
+    if partial:
+        suppress_partial_analysis(result)
+    return result
+
+
+def suppress_partial_analysis(result, *, extra_errors=()):
+    """Make an incomplete integrity result opaque and non-inferential."""
+    extra_errors = list(extra_errors)
+    if result.get("_analysis_suppressed"):
+        result["errors"].extend(extra_errors)
+        result["errors"].sort(
+            key=lambda error: (error["reference"], error["code"])
+        )
+        result["summary"]["scan_error_count"] += len(extra_errors)
+        return result
+
+    files = result.get("files", ())
+    existing_errors = list(result.get("errors", ()))
+    result["status"] = "partial"
+    result["_analysis_suppressed"] = True
+    result["summary"] = {
+        "audited_file_count": len(files),
+        "retained_bytes_read": sum(file.get("bytes_read", 0) for file in files),
+        "retained_physical_line_count": sum(
+            file.get("physical_lines", 0) for file in files
+        ),
+        "partial_file_count": sum(file.get("partial", False) for file in files),
+        "file_error_count": len(existing_errors),
+        "scan_error_count": len(extra_errors),
+    }
+    result["findings"] = []
+    result["errors"] = existing_errors + extra_errors
+    result["errors"].sort(
+        key=lambda error: (error["reference"], error["code"])
+    )
+    result["files"] = []
+    return result
 
 
 def read_first_record_field(
-    path, field, *, max_line_bytes=DEFAULT_MAX_LINE_BYTES
+    path,
+    field,
+    *,
+    max_line_bytes=None,
+    max_file_bytes=None,
+    max_lines=None,
 ):
     """Return bounded field-read facts without exposing record content."""
+    if max_line_bytes is None:
+        max_line_bytes = DEFAULT_MAX_LINE_BYTES
+    if max_file_bytes is None:
+        max_file_bytes = DEFAULT_MAX_FILE_BYTES
+    if max_lines is None:
+        max_lines = DEFAULT_MAX_LINES_PER_FILE
+    max_line_bytes = _positive_limit(max_line_bytes, "max_line_bytes")
+    max_file_bytes = _positive_limit(max_file_bytes, "max_file_bytes")
+    max_lines = _positive_limit(max_lines, "max_lines")
     bounded = False
     parse_failed = False
     try:
+        if os.path.getsize(path) > max_file_bytes:
+            return {
+                "value": None,
+                "bounded": True,
+                "error": "byte_budget_exceeded",
+            }
+    except OSError:
+        return {"value": None, "bounded": False, "error": "read_failed"}
+    read_state = BoundedReadState()
+    try:
         with open(path, "rb") as handle:
-            for line in iter_bounded_binary_lines(handle, max_line_bytes):
+            for line in iter_bounded_binary_lines(
+                handle,
+                max_line_bytes,
+                max_total_bytes=max_file_bytes,
+                max_lines=max_lines,
+                state=read_state,
+            ):
                 if line.truncated:
                     bounded = True
                     continue
                 try:
                     text = line.prefix.decode("utf-8", errors="strict")
                     record = json.loads(text)
-                except ValueError:
+                except (ValueError, RecursionError):
                     parse_failed = True
                     continue
                 if isinstance(record, dict):
@@ -506,6 +688,18 @@ def read_first_record_field(
                         }
     except OSError:
         return {"value": None, "bounded": bounded, "error": "read_failed"}
+    if read_state.byte_budget_exhausted:
+        return {
+            "value": None,
+            "bounded": True,
+            "error": "byte_budget_exceeded",
+        }
+    if read_state.line_budget_exhausted:
+        return {
+            "value": None,
+            "bounded": True,
+            "error": "line_budget_exceeded",
+        }
     return {
         "value": None,
         "bounded": bounded,
@@ -513,10 +707,21 @@ def read_first_record_field(
     }
 
 
-def first_record_field(path, field, *, max_line_bytes=DEFAULT_MAX_LINE_BYTES):
+def first_record_field(
+    path,
+    field,
+    *,
+    max_line_bytes=None,
+    max_file_bytes=None,
+    max_lines=None,
+):
     """Return the first non-empty string field through the bounded reader."""
     return read_first_record_field(
-        path, field, max_line_bytes=max_line_bytes
+        path,
+        field,
+        max_line_bytes=max_line_bytes,
+        max_file_bytes=max_file_bytes,
+        max_lines=max_lines,
     )["value"]
 
 

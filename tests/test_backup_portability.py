@@ -17,6 +17,7 @@ if SESSIONS not in sys.path:
     sys.path.insert(0, SESSIONS)
 
 import backup_claude_state  # noqa: E402
+import metadata_archive  # noqa: E402
 
 
 ACCOUNT_A = "11111111-1111-1111-1111-111111111111"
@@ -26,6 +27,24 @@ ORGANISATION_B = "44444444-4444-4444-4444-444444444444"
 
 
 class BackupPortabilityTests(unittest.TestCase):
+    def test_backup_uses_shared_archive_hard_caps(self):
+        self.assertEqual(
+            backup_claude_state.MAX_ARCHIVE_FILES,
+            metadata_archive.MAX_ARCHIVE_PAYLOAD_FILES,
+        )
+        self.assertEqual(
+            backup_claude_state.MAX_UNCOMPRESSED_BYTES,
+            metadata_archive.MAX_ARCHIVE_PAYLOAD_BYTES,
+        )
+        self.assertEqual(
+            backup_claude_state.MAX_MANIFEST_BYTES,
+            metadata_archive.MAX_MANIFEST_BYTES,
+        )
+        self.assertEqual(
+            backup_claude_state.MAX_METADATA_FILE_BYTES,
+            metadata_archive.MAX_METADATA_FILE_BYTES,
+        )
+
     def test_metadata_pair_discovery_handles_zero_pairs(self):
         with tempfile.TemporaryDirectory() as root:
             destination = os.path.join(root, "metadata.zip")
@@ -331,6 +350,198 @@ class BackupPortabilityTests(unittest.TestCase):
             with open(destination, "rb") as handle:
                 self.assertEqual(handle.read(), prior_backup)
             self.assertFalse(os.path.exists(destination + ".tmp"))
+
+    def test_low_discovery_caps_refuse_metadata_enumeration(self):
+        with tempfile.TemporaryDirectory() as root:
+            sessions = os.path.join(root, "claude-code-sessions")
+            account = os.path.join(sessions, ACCOUNT_A)
+            for organisation in (ORGANISATION_A, ORGANISATION_B):
+                metadata = os.path.join(account, organisation)
+                os.makedirs(metadata)
+                with open(os.path.join(metadata, "local_one.json"), "wb") as handle:
+                    handle.write(b'{"sessionId":"one"}\n')
+            with open(os.path.join(sessions, "auxiliary.txt"), "wb") as handle:
+                handle.write(b"ignored auxiliary")
+
+            cases = {
+                "per-directory": metadata_archive.ArchiveDiscoveryLimits(
+                    max_entries_per_directory=1
+                ),
+                "total traversal": metadata_archive.ArchiveDiscoveryLimits(
+                    max_total_entries=2
+                ),
+                "directory traversal": metadata_archive.ArchiveDiscoveryLimits(
+                    max_directories=2
+                ),
+                "retained paths": metadata_archive.ArchiveDiscoveryLimits(
+                    max_retained_paths=1
+                ),
+                "metadata pairs": metadata_archive.ArchiveDiscoveryLimits(
+                    max_metadata_pairs=1
+                ),
+            }
+            with mock.patch.object(backup_claude_state, "SESSIONS_BASE", sessions):
+                for label, limits in cases.items():
+                    with self.subTest(label=label):
+                        with self.assertRaises(
+                            metadata_archive.MetadataArchiveFormatError
+                        ):
+                            backup_claude_state._discover_meta_pairs(
+                                discovery_limits=limits
+                            )
+
+    def test_inaccessible_discovery_refuses_safely(self):
+        with tempfile.TemporaryDirectory() as root:
+            sessions = os.path.join(root, "claude-code-sessions")
+            os.makedirs(sessions)
+            with mock.patch.object(backup_claude_state, "SESSIONS_BASE", sessions), \
+                    mock.patch.object(
+                        backup_claude_state.os,
+                        "scandir",
+                        side_effect=PermissionError("injected inaccessible directory"),
+                    ):
+                with self.assertRaisesRegex(
+                    metadata_archive.MetadataArchiveFormatError,
+                    "cannot be enumerated safely",
+                ):
+                    backup_claude_state._discover_meta_pairs()
+
+    def test_low_payload_and_manifest_caps_preserve_existing_final(self):
+        with tempfile.TemporaryDirectory() as root:
+            sessions = os.path.join(root, "claude-code-sessions")
+            metadata = os.path.join(sessions, ACCOUNT_A, ORGANISATION_A)
+            os.makedirs(metadata)
+            with open(os.path.join(metadata, "local_one.json"), "wb") as handle:
+                handle.write(b'{"sessionId":"one"}\n')
+            destination = os.path.join(root, "metadata.zip")
+            with mock.patch.object(backup_claude_state, "SESSIONS_BASE", sessions):
+                pairs = backup_claude_state._discover_meta_pairs()
+                backup_claude_state._backup_zip(
+                    sessions,
+                    destination,
+                    lambda _message: None,
+                    False,
+                    pairs=pairs,
+                    source_layer="desktop-metadata",
+                )
+                with open(destination, "rb") as handle:
+                    prior = handle.read()
+
+                with open(os.path.join(metadata, "local_two.json"), "wb") as handle:
+                    handle.write(b'{"sessionId":"two"}\n')
+                pairs = backup_claude_state._discover_meta_pairs()
+                limits_to_refuse = (
+                    metadata_archive.ArchiveDiscoveryLimits(max_payload_files=1),
+                    metadata_archive.ArchiveDiscoveryLimits(max_payload_bytes=1),
+                    metadata_archive.ArchiveDiscoveryLimits(
+                        max_metadata_file_bytes=1
+                    ),
+                )
+                for limits in limits_to_refuse:
+                    with self.subTest(limits=limits):
+                        with self.assertRaises(
+                            metadata_archive.MetadataArchiveFormatError
+                        ):
+                            backup_claude_state._backup_zip(
+                                sessions,
+                                destination,
+                                lambda _message: None,
+                                False,
+                                pairs=pairs,
+                                source_layer="desktop-metadata",
+                                discovery_limits=limits,
+                            )
+                        with open(destination, "rb") as handle:
+                            self.assertEqual(handle.read(), prior)
+                        self.assertFalse(os.path.exists(destination + ".tmp"))
+
+                with mock.patch.object(
+                    backup_claude_state, "MAX_MANIFEST_BYTES", 1
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError, "manifest exceeds the bounded size limit"
+                    ):
+                        backup_claude_state._backup_zip(
+                            sessions,
+                            destination,
+                            lambda _message: None,
+                            False,
+                            pairs=pairs,
+                            source_layer="desktop-metadata",
+                        )
+                with open(destination, "rb") as handle:
+                    self.assertEqual(handle.read(), prior)
+                self.assertFalse(os.path.exists(destination + ".tmp"))
+
+    def test_generic_walk_is_bounded_and_preserves_existing_final(self):
+        with tempfile.TemporaryDirectory() as root:
+            source_root = os.path.join(root, "projects")
+            os.makedirs(source_root)
+            with open(os.path.join(source_root, "one.jsonl"), "wb") as handle:
+                handle.write(b"one\n")
+            destination = os.path.join(root, "projects.zip")
+            backup_claude_state._backup_zip(
+                source_root,
+                destination,
+                lambda _message: None,
+                False,
+                source_layer="jsonl-projects",
+            )
+            with open(destination, "rb") as handle:
+                prior = handle.read()
+
+            nested = os.path.join(source_root, "nested")
+            os.makedirs(nested)
+            with open(os.path.join(nested, "two.jsonl"), "wb") as handle:
+                handle.write(b"two\n")
+            limits = metadata_archive.ArchiveDiscoveryLimits(max_payload_files=1)
+            with self.assertRaises(metadata_archive.MetadataArchiveFormatError):
+                backup_claude_state._backup_zip(
+                    source_root,
+                    destination,
+                    lambda _message: None,
+                    False,
+                    source_layer="jsonl-projects",
+                    discovery_limits=limits,
+                )
+            with open(destination, "rb") as handle:
+                self.assertEqual(handle.read(), prior)
+            self.assertFalse(os.path.exists(destination + ".tmp"))
+
+    def test_metadata_file_collection_stops_at_the_configured_cap(self):
+        with tempfile.TemporaryDirectory() as root:
+            sessions = os.path.join(root, "claude-code-sessions")
+            metadata = os.path.join(sessions, ACCOUNT_A, ORGANISATION_A)
+            os.makedirs(metadata)
+            paths = []
+            for name in ("local_one.json", "local_two.json"):
+                path = os.path.join(metadata, name)
+                with open(path, "wb") as handle:
+                    handle.write(b'{"sessionId":"one"}\n')
+                paths.append(path)
+
+            def hostile_listing():
+                yield paths[0]
+                yield paths[1]
+                raise AssertionError("collector read beyond its file cap")
+
+            pairs = [{
+                "account_uuid": ACCOUNT_A,
+                "organisation_uuid": ORGANISATION_A,
+                "path": metadata,
+                "files": hostile_listing(),
+            }]
+            limits = metadata_archive.ArchiveDiscoveryLimits(max_payload_files=1)
+            with self.assertRaises(metadata_archive.MetadataArchiveFormatError):
+                backup_claude_state._backup_zip(
+                    sessions,
+                    os.path.join(root, "metadata.zip"),
+                    lambda _message: None,
+                    False,
+                    pairs=pairs,
+                    source_layer="desktop-metadata",
+                    discovery_limits=limits,
+                )
 
     def test_darwin_pruning_moves_old_snapshot_to_user_trash(self):
         with tempfile.TemporaryDirectory() as root:

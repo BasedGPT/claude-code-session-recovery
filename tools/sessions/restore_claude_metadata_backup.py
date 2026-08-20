@@ -21,6 +21,7 @@ import json
 import math
 import os
 from pathlib import PurePosixPath
+import re
 import secrets
 import stat as stat_module
 import sys
@@ -44,6 +45,9 @@ from lock_utils import acquire_lock, release_lock  # noqa: E402
 from metadata_archive import (  # noqa: E402
     LAYOUT_VERSION,
     MANIFEST_NAME,
+    MAX_ARCHIVE_PAYLOAD_BYTES as MAX_UNCOMPRESSED_BYTES,
+    MAX_ARCHIVE_PAYLOAD_FILES as MAX_ARCHIVE_FILES,
+    MAX_MANIFEST_BYTES,
     MAX_METADATA_FILE_BYTES,
     SOURCE_LAYER,
     MetadataArchiveFormatError,
@@ -64,12 +68,12 @@ from session_state import build_snapshot, make_diagnosis_id  # noqa: E402
 
 
 HASH_CHUNK_SIZE = 1024 * 1024
-MAX_ARCHIVE_FILES = 10_000
-MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
-MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_ARCHIVE_SOURCE_BYTES = 1024 * 1024 * 1024
 MAX_GUARD_FILES = 100_000
 MAX_GUARD_BYTES = 4 * 1024 * 1024 * 1024
+MAX_GUARD_ENTRIES_PER_DIRECTORY = 100_000
+MAX_GUARD_ENTRIES = 200_000
+MAX_GUARD_DEPTH = 256
 MAX_JSON_INTEGER_DIGITS = 4096
 MAX_JSON_DEPTH = 256
 
@@ -991,8 +995,13 @@ def _validate_archive_envelope(
     infos = archive.infolist()
     if len(infos) > max_files + 1:
         raise RestoreRefusal("archive exceeds the file-count cap")
-    if sum(info.file_size for info in infos) > max_bytes:
-        raise RestoreRefusal("archive exceeds the uncompressed-byte cap")
+    payload_bytes = 0
+    for info in infos:
+        if info.filename == MANIFEST_NAME:
+            continue
+        payload_bytes += info.file_size
+        if payload_bytes > max_bytes:
+            raise RestoreRefusal("archive exceeds the uncompressed-byte cap")
 
     names: dict[str, zipfile.ZipInfo] = {}
     folded = set()
@@ -1561,6 +1570,20 @@ def apply_plan(
         created_windows_dirs.clear()
 
 
+def _redact_plan_identities(value: str, plan: RestorePlan) -> str:
+    redacted = value
+    for entry in plan.entries:
+        parts = PurePosixPath(entry.target_relative).parts
+        if len(parts) < 3:
+            continue
+        for segment in parts[:2]:
+            redacted = re.sub(
+                re.escape(segment), entry.pair_label, redacted,
+                flags=re.IGNORECASE,
+            )
+    return redacted
+
+
 def _print_plan(
     archive_path: str,
     sessions_root: str,
@@ -1571,7 +1594,9 @@ def _print_plan(
 ) -> None:
     print("Claude Desktop Metadata Restore")
     print("-" * 60)
-    print("Archive       : {}".format(os.path.basename(archive_path)))
+    print("Archive       : {}".format(
+        _redact_plan_identities(os.path.basename(archive_path), plan)
+    ))
     print("Layout        : {}".format(plan.layout))
     print("Pairs         : {}".format(plan.pair_count))
     print("Files         : {}".format(len(plan.entries)))
@@ -1583,8 +1608,14 @@ def _print_plan(
         state = "SKIP identical" if entry in plan.identical else "RESTORE"
         line = "  {}  {}  {}".format(entry.pair_label, state, entry.file_name)
         if include_paths:
-            line += " -> " + _contained_target(sessions_root, entry.target_relative)
-        print(line)
+            # Preserve the useful destination root/filename while keeping both
+            # account and organisation UUID segments private.
+            _contained_target(sessions_root, entry.target_relative)
+            display_target = os.path.join(
+                os.path.abspath(sessions_root), entry.pair_label, entry.file_name
+            )
+            line += " -> " + _redact_plan_identities(display_target, plan)
+        print(_redact_plan_identities(line, plan))
 
 
 def _lock_path(appdata_dir: str) -> str:
@@ -1625,7 +1656,11 @@ def _guard_tree_records(
     if not os.path.lexists(root):
         return []
 
-    def visit(path: str, relative: str) -> list[tuple]:
+    budget.setdefault("entries", 0)
+
+    def visit(path: str, relative: str, depth: int = 0) -> list[tuple]:
+        if depth > MAX_GUARD_DEPTH:
+            raise RestoreRefusal("live-state transaction guard exceeds bounded depth")
         key = _normal_path(path)
         result = os.stat(path, follow_symlinks=False)
         if stat_module.S_ISLNK(result.st_mode):
@@ -1638,12 +1673,27 @@ def _guard_tree_records(
         if stat_module.S_ISDIR(result.st_mode):
             children = []
             try:
-                entries = sorted(os.scandir(path), key=lambda item: item.name)
+                entries = []
+                with os.scandir(path) as iterator:
+                    for entry in iterator:
+                        if len(entries) >= MAX_GUARD_ENTRIES_PER_DIRECTORY:
+                            raise RestoreRefusal(
+                                "live-state transaction guard exceeds bounded directory entries"
+                            )
+                        budget["entries"] += 1
+                        if budget["entries"] > MAX_GUARD_ENTRIES:
+                            raise RestoreRefusal(
+                                "live-state transaction guard exceeds bounded entries"
+                            )
+                        entries.append(entry)
+                entries.sort(key=lambda item: item.name)
+            except RestoreRefusal:
+                raise
             except OSError as exc:
                 raise RestoreRefusal("live state cannot be enumerated safely") from exc
             for entry in entries:
                 child_relative = os.path.join(relative, entry.name) if relative else entry.name
-                children.extend(visit(entry.path, child_relative))
+                children.extend(visit(entry.path, child_relative, depth + 1))
             after = os.stat(path, follow_symlinks=False)
             if _stat_signature(result) != _stat_signature(after):
                 raise RestoreRefusal(

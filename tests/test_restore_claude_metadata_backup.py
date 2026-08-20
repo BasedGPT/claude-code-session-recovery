@@ -18,6 +18,7 @@ sys.path.insert(0, str(SESSIONS))
 sys.path.insert(0, str(TOOLS))
 
 import restore_claude_metadata_backup as restore  # noqa: E402
+import metadata_archive  # noqa: E402
 
 
 ACCOUNT = "11111111-1111-1111-1111-111111111111"
@@ -142,6 +143,51 @@ def test_v2_dry_run_and_apply_are_token_bound_and_privacy_safe(
     assert target.read_bytes() == b'{"sessionId":"one"}\n'
 
 
+def test_restore_uses_shared_archive_hard_caps():
+    assert restore.MAX_ARCHIVE_FILES == metadata_archive.MAX_ARCHIVE_PAYLOAD_FILES
+    assert (
+        restore.MAX_UNCOMPRESSED_BYTES
+        == metadata_archive.MAX_ARCHIVE_PAYLOAD_BYTES
+    )
+    assert restore.MAX_MANIFEST_BYTES == metadata_archive.MAX_MANIFEST_BYTES
+    assert restore.MAX_METADATA_FILE_BYTES == metadata_archive.MAX_METADATA_FILE_BYTES
+
+
+def test_include_paths_and_archive_name_never_reveal_pair_uuids(
+    tmp_path, capsys
+):
+    state = _state(tmp_path)
+    identity_file = "local_{}_{}.json".format(ACCOUNT, ORGANISATION)
+    archive = _manifest_archive(
+        tmp_path / "{}-{}-{}.zip".format(
+            ACCOUNT, ACCOUNT.upper(), ORGANISATION.upper()
+        ),
+        {identity_file: b'{"sessionId":"one"}\n'},
+    )
+
+    assert _run(state, archive, "--include-paths") == 0
+    output = capsys.readouterr().out
+    assert ACCOUNT not in output
+    assert ORGANISATION not in output
+    assert ACCOUNT.upper() not in output
+    assert ORGANISATION.upper() not in output
+    assert "pair-01" in output
+    assert "local_pair-01_pair-01.json" in output
+    assert str(state / "appdata" / "Claude" / "claude-code-sessions") in output
+
+
+def test_uncompressed_cap_counts_payload_only(tmp_path):
+    state = _state(tmp_path)
+    payload = b'{"sessionId":"one"}\n'
+    archive = _manifest_archive(
+        tmp_path / "desktop.zip", {"local_one.json": payload}
+    )
+
+    assert _run(
+        state, archive, "--max-uncompressed-bytes", str(len(payload))
+    ) == 0
+
+
 def test_legacy_is_inspectable_with_explicit_pair_but_apply_is_refused(
     tmp_path, monkeypatch, capsys
 ):
@@ -156,9 +202,12 @@ def test_legacy_is_inspectable_with_explicit_pair_but_apply_is_refused(
         archive,
         "--target-account-uuid", ACCOUNT,
         "--target-organisation-uuid", ORGANISATION,
+        "--include-paths",
     ) == 0
     dry_output = capsys.readouterr().out
     assert "Layout        : legacy" in dry_output
+    assert ACCOUNT not in dry_output and ORGANISATION not in dry_output
+    assert "pair-01" in dry_output
     assert "Apply unavailable: mutation requires a layout v2" in dry_output
     assert "Re-run with --apply" not in dry_output
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
@@ -976,6 +1025,28 @@ def test_each_created_directory_is_anchored_immediately_after_mkdir(
         ("mkdir", ORGANISATION),
         ("anchor", ORGANISATION),
     ]
+
+
+def test_live_state_guard_refuses_before_materializing_over_cap_directory(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "guarded"
+    root.mkdir()
+    (root / "one.jsonl").write_text("{}\n", encoding="utf-8")
+    (root / "two.jsonl").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(restore, "MAX_GUARD_ENTRIES_PER_DIRECTORY", 1)
+
+    with pytest.raises(
+        restore.RestoreRefusal,
+        match="bounded directory entries",
+    ):
+        restore._guard_tree_records(
+            str(root),
+            excluded_files=set(),
+            excluded_dirs=set(),
+            transcript_only=True,
+            budget={"files": 0, "bytes": 0},
+        )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="non-Windows portability contract")

@@ -168,6 +168,112 @@ def test_bounded_reader_discards_multi_megabyte_remainder_in_fixed_chunks():
     assert handle.max_requested == transcript_audit._READ_CHUNK_BYTES
 
 
+def test_bounded_reader_stops_non_terminating_stream_at_byte_budget():
+    class NonTerminatingBytes:
+        def __init__(self):
+            self.read_calls = 0
+
+        def read(self, size):
+            self.read_calls += 1
+            return b"x" * size
+
+    handle = NonTerminatingBytes()
+    state = transcript_audit.BoundedReadState()
+
+    lines = list(transcript_audit.iter_bounded_binary_lines(
+        handle,
+        max_line_bytes=4,
+        max_total_bytes=10,
+        max_lines=100,
+        state=state,
+    ))
+
+    assert handle.read_calls == 1
+    assert state.bytes_read == 10
+    assert state.byte_budget_exhausted is True
+    assert state.reached_eof is False
+    assert len(lines) == 1
+    assert lines[0].prefix == b"xxxx"
+    assert lines[0].truncated is True
+
+
+def test_bounded_reader_stops_non_terminating_stream_at_line_budget():
+    class NonTerminatingLines:
+        def __init__(self):
+            self.read_calls = 0
+
+        def read(self, _size):
+            self.read_calls += 1
+            return b"{}\n"
+
+    handle = NonTerminatingLines()
+    state = transcript_audit.BoundedReadState()
+
+    lines = list(transcript_audit.iter_bounded_binary_lines(
+        handle,
+        max_total_bytes=100,
+        max_lines=2,
+        state=state,
+    ))
+
+    assert handle.read_calls == 2
+    assert state.lines_yielded == 2
+    assert state.line_budget_exhausted is True
+    assert state.reached_eof is False
+    assert [line.prefix for line in lines] == [b"{}\n", b"{}\n"]
+
+
+def test_integrity_line_budget_is_partial_and_suppresses_prefix_inference(tmp_path):
+    path = _write(
+        tmp_path / "line-cap.jsonl",
+        b'{' + b'"uuid":"u1"}' + b"\n"
+        + b'{' + b'"uuid":"u1"}' + b"\n",
+    )
+
+    result = transcript_audit.audit_transcript_paths(
+        [path], max_file_bytes=100, max_lines_per_file=1
+    )
+
+    assert result["status"] == "partial"
+    assert result["_analysis_suppressed"] is True
+    assert result["findings"] == []
+    assert result["files"] == []
+    assert result["summary"] == {
+        "audited_file_count": 1,
+        "retained_bytes_read": len(path.read_bytes()),
+        "retained_physical_line_count": 1,
+        "partial_file_count": 1,
+        "file_error_count": 1,
+        "scan_error_count": 0,
+    }
+    assert result["errors"] == [{
+        "reference": "transcript-0001",
+        "code": "line_budget_exceeded",
+    }]
+
+
+def test_integrity_byte_budget_is_partial_without_opening_oversized_file(
+    tmp_path, monkeypatch
+):
+    path = _write(tmp_path / "byte-cap.jsonl", b'{"uuid":"private-node"}\n')
+
+    def forbidden_open(*_args, **_kwargs):
+        raise AssertionError("known oversized transcript must not be opened")
+
+    monkeypatch.setattr(transcript_audit, "open", forbidden_open, raising=False)
+    result = transcript_audit.audit_transcript_paths([path], max_file_bytes=8)
+
+    assert result["status"] == "partial"
+    assert result["findings"] == []
+    assert result["files"] == []
+    assert result["summary"]["retained_bytes_read"] == 0
+    assert result["errors"] == [{
+        "reference": "transcript-0001",
+        "code": "byte_budget_exceeded",
+    }]
+    assert "private-node" not in json.dumps(result)
+
+
 def test_iterative_cycle_scan_handles_ten_thousand_node_chain():
     node_count = 10_000
     uuid_values = {
@@ -261,6 +367,48 @@ def test_first_record_field_treats_integer_digit_limit_as_partial_parse_anomaly(
     }]
 
 
+@pytest.mark.parametrize(
+    ("cap_name", "content", "expected_error"),
+    [
+        (
+            "DEFAULT_MAX_FILE_BYTES",
+            b'{}\n{"cwd":"private-byte-value"}\n',
+            "byte_budget_exceeded",
+        ),
+        (
+            "DEFAULT_MAX_LINES_PER_FILE",
+            b'{}\n{"cwd":"private-line-value"}\n',
+            "line_budget_exceeded",
+        ),
+    ],
+)
+def test_identity_field_budget_is_partial_and_suppresses_inference(
+    tmp_path, monkeypatch, cap_name, content, expected_error
+):
+    path = _write(
+        tmp_path / "projects" / "slug" / "identity.jsonl",
+        content,
+    )
+    monkeypatch.setattr(transcript_audit, cap_name, 1)
+
+    read = transcript_audit.read_first_record_field(path, "cwd")
+    result = audit_identity(str(tmp_path / "projects"))
+
+    assert read == {
+        "value": None,
+        "bounded": True,
+        "error": expected_error,
+    }
+    assert result["status"] == "partial"
+    assert result["findings"] == []
+    assert result["transcripts"] == []
+    assert result["errors"] == [{
+        "reference": "transcript-0001",
+        "code": "transcript_read_failed",
+    }]
+    assert "private-" not in json.dumps(result)
+
+
 def test_explicit_integrity_cli_is_private_and_deterministic(tmp_path, capsys, monkeypatch):
     private_root = tmp_path / "PrivateName"
     path = _write(private_root / "projects" / "slug" / "id.jsonl", b"{}\n")
@@ -343,6 +491,36 @@ def test_inaccessible_slug_discovery_is_partial_and_exit_zero(
         {"code": "slug_list_failed", "reference": "scan-entry-0001"}
     ]
     assert "blocked" not in json.dumps(payload)
+
+
+def test_integrity_shared_inventory_cap_is_explicit_and_suppresses_inference(
+    tmp_path, capsys, monkeypatch
+):
+    projects = tmp_path / "private-projects"
+    _write(
+        projects / "slug-a" / "one.jsonl",
+        b'{"uuid":"duplicate"}\n{"uuid":"duplicate"}\n',
+    )
+    _write(projects / "slug-b" / "two.jsonl", b"{}\n")
+    monkeypatch.setattr(transcript_files, "MAX_TRANSCRIPT_PATHS", 1)
+
+    assert integrity_main([
+        "--projects-dir", str(projects), "--json", "--details", "--include-paths",
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["status"] == "partial"
+    assert set(payload) == {
+        "schema_version", "read_only", "status", "limits", "summary", "errors",
+    }
+    assert payload["summary"]["audited_file_count"] == 1
+    assert payload["summary"]["scan_error_count"] == 1
+    assert payload["errors"] == [{
+        "reference": "scan-entry-0001",
+        "code": "transcript_path_cap_exceeded",
+    }]
+    assert "duplicate" not in json.dumps(payload)
+    assert "private-projects" not in json.dumps(payload)
 
 
 def test_identity_discovery_reports_inaccessible_slug_as_partial(tmp_path, monkeypatch):

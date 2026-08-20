@@ -90,8 +90,13 @@ try:
 except ImportError:
     build_snapshot = None
 from metadata_archive import (  # noqa: E402
+    ArchiveDiscoveryBudget,
+    ArchiveDiscoveryLimits,
     LAYOUT_VERSION as BACKUP_LAYOUT_VERSION,
     MANIFEST_NAME as MANIFEST_ARCHIVE_PATH,
+    MAX_ARCHIVE_PAYLOAD_BYTES as MAX_UNCOMPRESSED_BYTES,
+    MAX_ARCHIVE_PAYLOAD_FILES as MAX_ARCHIVE_FILES,
+    MAX_MANIFEST_BYTES,
     MAX_METADATA_FILE_BYTES,
     MetadataArchiveFormatError,
     canonical_uuid,
@@ -184,7 +189,25 @@ def _recycle(path):
         raise OSError("SHFileOperationW failed (code {}) for {}".format(rc, path))
 
 
-def _discover_meta_pairs():
+def _entry_stat(entry):
+    try:
+        return entry.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise RuntimeError("backup source entry cannot be inspected safely") from exc
+
+
+def _require_direct_directory(path):
+    try:
+        result = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError("Source dir not found: {}".format(path)) from exc
+    except OSError as exc:
+        raise RuntimeError("backup source directory cannot be inspected safely") from exc
+    if not stat_module.S_ISDIR(result.st_mode):
+        raise RuntimeError("backup source root is not a direct directory")
+
+
+def _discover_meta_pairs(*, discovery_limits=None):
     """Return every account/org metadata pair in deterministic order.
 
     Logout/login can leave more than one pair under
@@ -192,43 +215,42 @@ def _discover_meta_pairs():
     treating that state as an error. The filesystem path is retained for the
     caller; it is not written to the portable manifest.
     """
-    try:
-        sessions_result = os.stat(SESSIONS_BASE, follow_symlinks=False)
-    except FileNotFoundError:
-        raise RuntimeError("claude-code-sessions dir not found: {}".format(SESSIONS_BASE))
-    if not stat_module.S_ISDIR(sessions_result.st_mode):
-        raise RuntimeError("claude-code-sessions root is not a direct directory")
+    _require_direct_directory(SESSIONS_BASE)
+    budget = ArchiveDiscoveryBudget(discovery_limits)
 
     pairs = []
-    with os.scandir(SESSIONS_BASE) as entries:
-        accounts = sorted(entries, key=lambda entry: entry.name)
-    for account_entry in accounts:
-        if not account_entry.is_dir(follow_symlinks=False):
+    for account_entry in budget.scan_directory(SESSIONS_BASE):
+        account_result = _entry_stat(account_entry)
+        if not stat_module.S_ISDIR(account_result.st_mode):
+            if not stat_module.S_ISREG(account_result.st_mode):
+                raise RuntimeError("metadata root contains an unsupported entry")
             continue
         account_uuid = account_entry.name
         if not canonical_uuid(account_uuid):
             raise RuntimeError("metadata account directory is not a canonical UUID")
-        with os.scandir(account_entry.path) as entries:
-            organisations = sorted(entries, key=lambda entry: entry.name)
-        for organisation_entry in organisations:
-            if not organisation_entry.is_dir(follow_symlinks=False):
+        for organisation_entry in budget.scan_directory(account_entry.path):
+            organisation_result = _entry_stat(organisation_entry)
+            if not stat_module.S_ISDIR(organisation_result.st_mode):
+                if not stat_module.S_ISREG(organisation_result.st_mode):
+                    raise RuntimeError("metadata account contains an unsupported entry")
                 continue
             organisation_uuid = organisation_entry.name
             if not canonical_uuid(organisation_uuid):
                 raise RuntimeError("metadata organisation directory is not a canonical UUID")
             metadata_dir = organisation_entry.path
-            with os.scandir(metadata_dir) as entries:
-                metadata_entries = sorted(entries, key=lambda entry: entry.name)
             files = []
-            for entry in metadata_entries:
+            for entry in budget.scan_directory(metadata_dir):
+                result = _entry_stat(entry)
                 if metadata_filename(entry.name):
-                    if not entry.is_file(follow_symlinks=False):
+                    if not stat_module.S_ISREG(result.st_mode):
                         raise RuntimeError(
                             "eligible metadata path is not a direct regular file"
                         )
+                    budget.retain_payload_file(result.st_size, metadata=True)
                     files.append(entry.path)
                 elif entry.name.startswith("local_") and entry.name.endswith(".json"):
                     raise RuntimeError("metadata filename is not restore-compatible")
+            budget.retain_metadata_pair()
             pairs.append({
                 "account_uuid": account_uuid,
                 "organisation_uuid": organisation_uuid,
@@ -250,23 +272,25 @@ def _discover_meta_dir():
     return pairs[0]["path"]
 
 
-def _iter_source_files(src_dir):
-    """Yield source files in stable order for hashing and archive creation."""
-    for root, dirs, files in os.walk(src_dir):
-        dirs.sort()
-        for fname in sorted(files):
-            full = os.path.join(root, fname)
-            if os.path.isfile(full):
-                yield full
-
-
-def _dir_stats(src_dir):
-    """Return (total_bytes, file_count) by walking src_dir."""
-    total, count = 0, 0
-    for full in _iter_source_files(src_dir):
-        total += os.path.getsize(full)
-        count += 1
-    return total, count
+def _iter_source_files(src_dir, *, discovery_limits=None):
+    """Yield a stable, explicitly bounded regular-file source inventory."""
+    budget = ArchiveDiscoveryBudget(discovery_limits)
+    pending = [os.path.abspath(src_dir)]
+    while pending:
+        root = pending.pop()
+        directories = []
+        files = []
+        for entry in budget.scan_directory(root):
+            result = _entry_stat(entry)
+            if stat_module.S_ISDIR(result.st_mode):
+                directories.append(entry.path)
+            elif stat_module.S_ISREG(result.st_mode):
+                budget.retain_payload_file(result.st_size, metadata=False)
+                files.append(entry.path)
+            else:
+                raise RuntimeError("backup source contains an unsupported entry")
+        yield from files
+        pending.extend(reversed(directories))
 
 
 def _metadata_source_files(pairs):
@@ -275,14 +299,25 @@ def _metadata_source_files(pairs):
         yield from pair.get("files", ())
 
 
-def _source_file_stats(source_files):
+def _source_file_stats(
+    source_files, *, metadata, pair_count=0, discovery_limits=None
+):
+    """Collect source paths only after each one passes the bounded budget."""
+    budget = ArchiveDiscoveryBudget(discovery_limits)
+    budget.retain_metadata_pairs(pair_count)
     total = 0
+    retained = []
     for path in source_files:
-        result = os.stat(path, follow_symlinks=False)
+        try:
+            result = os.stat(path, follow_symlinks=False)
+        except OSError as exc:
+            raise RuntimeError("backup source file cannot be inspected safely") from exc
         if not stat_module.S_ISREG(result.st_mode):
             raise RuntimeError("backup source is not a regular file")
+        budget.retain_payload_file(result.st_size, metadata=metadata)
         total += result.st_size
-    return total, len(source_files)
+        retained.append(path)
+    return total, len(retained), retained
 
 
 def _manifest_pairs(src_dir, pairs):
@@ -302,7 +337,7 @@ def _manifest_pairs(src_dir, pairs):
     return records
 
 
-def _write_hashed_zip_entry(zip_file, source_path, archive_path):
+def _write_hashed_zip_entry(zip_file, source_path, archive_path, *, max_bytes):
     """Copy one file into a zip while returning its byte count and SHA-256."""
     before = os.stat(source_path, follow_symlinks=False)
     if not stat_module.S_ISREG(before.st_mode):
@@ -322,6 +357,8 @@ def _write_hashed_zip_entry(zip_file, source_path, archive_path):
             chunk = source.read(HASH_CHUNK_SIZE)
             if not chunk:
                 break
+            if byte_count + len(chunk) > max_bytes:
+                raise RuntimeError("backup source exceeds the bounded byte limit")
             target.write(chunk)
             digest.update(chunk)
             byte_count += len(chunk)
@@ -340,11 +377,25 @@ def _verify_backup_zip(archive_path):
     """Validate CRCs, manifest schema, entries, sizes, and SHA-256 hashes."""
     try:
         with zipfile.ZipFile(archive_path, "r") as archive:
-            names = archive.namelist()
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
             if len(names) != len(set(names)):
                 raise RuntimeError("duplicate archive entry")
             if MANIFEST_ARCHIVE_PATH not in names:
                 raise RuntimeError("manifest is missing")
+            manifest_info = archive.getinfo(MANIFEST_ARCHIVE_PATH)
+            if manifest_info.file_size > MAX_MANIFEST_BYTES:
+                raise RuntimeError("manifest exceeds the bounded size limit")
+            payload_infos = [
+                info for info in infos if info.filename != MANIFEST_ARCHIVE_PATH
+            ]
+            if len(payload_infos) > MAX_ARCHIVE_FILES:
+                raise RuntimeError("archive exceeds the payload-file cap")
+            payload_bytes = 0
+            for info in payload_infos:
+                payload_bytes += info.file_size
+                if payload_bytes > MAX_UNCOMPRESSED_BYTES:
+                    raise RuntimeError("archive exceeds the payload-byte cap")
             corrupt_entry = archive.testzip()
             if corrupt_entry is not None:
                 raise RuntimeError("CRC failure for {}".format(corrupt_entry))
@@ -479,24 +530,40 @@ def _verify_backup_zip(archive_path):
         raise RuntimeError("backup verification failed: {}".format(exc)) from exc
 
 
-def _backup_zip(src_dir, dest_zip, log, dry_run, *, pairs=None, source_layer=None):
+def _backup_zip(
+    src_dir,
+    dest_zip,
+    log,
+    dry_run,
+    *,
+    pairs=None,
+    source_layer=None,
+    discovery_limits=None,
+):
     """Zip ``src_dir`` atomically and include a portable integrity manifest."""
-    if not os.path.isdir(src_dir):
-        raise RuntimeError("Source dir not found: {}".format(src_dir))
+    _require_direct_directory(src_dir)
+    limits = discovery_limits or ArchiveDiscoveryLimits()
     if source_layer == "desktop-metadata" and not pairs:
         raise RuntimeError(
             "No account/organisation metadata pairs found; preserving prior backup"
         )
     if source_layer == "desktop-metadata":
-        source_files = list(_metadata_source_files(pairs))
-        src_bytes, src_files = _source_file_stats(source_files)
+        src_bytes, src_files, source_files = _source_file_stats(
+            _metadata_source_files(pairs),
+            metadata=True,
+            pair_count=len(pairs),
+            discovery_limits=limits,
+        )
         if not source_files:
             raise RuntimeError(
                 "No eligible direct metadata files found; preserving prior backup"
             )
     else:
-        source_files = list(_iter_source_files(src_dir))
-        src_bytes, src_files = _source_file_stats(source_files)
+        src_bytes, src_files, source_files = _source_file_stats(
+            _iter_source_files(src_dir, discovery_limits=limits),
+            metadata=False,
+            discovery_limits=limits,
+        )
     log("  Source : {}".format(src_dir))
     log("  Size   : {:,} bytes ({} files)".format(src_bytes, src_files))
     log("  Dest   : {}".format(dest_zip))
@@ -513,6 +580,11 @@ def _backup_zip(src_dir, dest_zip, log, dry_run, *, pairs=None, source_layer=Non
     try:
         manifest_pairs = _manifest_pairs(src_dir, pairs)
         manifest_files = []
+        manifest_names = set()
+        pair_by_root = {
+            pair["archive_root"]: pair for pair in manifest_pairs
+        }
+        written_payload_bytes = 0
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
             for full in source_files:
                 arcname = os.path.relpath(full, src_dir).replace("\\", "/")
@@ -522,23 +594,36 @@ def _backup_zip(src_dir, dest_zip, log, dry_run, *, pairs=None, source_layer=Non
                             MANIFEST_ARCHIVE_PATH
                         )
                     )
-                if any(item["archive_path"] == arcname for item in manifest_files):
+                if arcname in manifest_names:
                     raise RuntimeError("archive path collision: {}".format(arcname))
-                byte_count, digest = _write_hashed_zip_entry(zf, full, arcname)
+                remaining_bytes = limits.max_payload_bytes - written_payload_bytes
+                per_file_limit = (
+                    limits.max_metadata_file_bytes
+                    if source_layer == "desktop-metadata"
+                    else limits.max_payload_bytes
+                )
+                byte_count, digest = _write_hashed_zip_entry(
+                    zf,
+                    full,
+                    arcname,
+                    max_bytes=min(per_file_limit, remaining_bytes),
+                )
+                written_payload_bytes += byte_count
                 file_record = {
                     "archive_path": arcname,
                     "size": byte_count,
                     "sha256": digest,
                 }
-                for pair in manifest_pairs:
-                    prefix = pair["archive_root"].rstrip("/") + "/"
-                    if arcname.startswith(prefix):
-                        file_record["account_uuid"] = pair["account_uuid"]
-                        file_record["organisation_uuid"] = pair["organisation_uuid"]
-                        pair["file_count"] += 1
-                        pair["total_bytes"] += byte_count
-                        break
+                parts = arcname.split("/")
+                archive_root = "/".join(parts[:2]) if len(parts) >= 3 else None
+                pair = pair_by_root.get(archive_root)
+                if pair is not None:
+                    file_record["account_uuid"] = pair["account_uuid"]
+                    file_record["organisation_uuid"] = pair["organisation_uuid"]
+                    pair["file_count"] += 1
+                    pair["total_bytes"] += byte_count
                 manifest_files.append(file_record)
+                manifest_names.add(arcname)
 
             manifest = {
                 "layout_version": BACKUP_LAYOUT_VERSION,
@@ -546,10 +631,12 @@ def _backup_zip(src_dir, dest_zip, log, dry_run, *, pairs=None, source_layer=Non
                 "pairs": manifest_pairs,
                 "files": manifest_files,
             }
-            zf.writestr(
-                MANIFEST_ARCHIVE_PATH,
-                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            )
+            manifest_bytes = (
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+                raise RuntimeError("manifest exceeds the bounded size limit")
+            zf.writestr(MANIFEST_ARCHIVE_PATH, manifest_bytes)
         _verify_backup_zip(tmp)
     except Exception:
         if os.path.exists(tmp):

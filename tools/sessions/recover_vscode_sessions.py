@@ -63,6 +63,10 @@ import time
 
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
+from platform_support import (  # noqa: E402
+    default_claude_sessions_index_dir,
+    default_vscode_workspace_storage_dir,
+)
 from transcript_files import (  # noqa: E402
     IncompleteTranscriptInventoryError,
     build_transcript_path_inventory,
@@ -80,27 +84,6 @@ _TS_MIN_MS = 1577836800000  # 2020-01-01 UTC
 
 # Windows process names that write state.vscdb (checked case-insensitively).
 _VSCODE_PROCESSES_WIN = ["Code.exe", "Code - Insiders.exe", "VSCodium.exe"]
-
-# ---------------------------------------------------------------------------
-# Platform paths
-# ---------------------------------------------------------------------------
-
-def _default_workspace_dir():
-    sys_name = platform.system()
-    if sys_name == "Darwin":
-        return os.path.expanduser(
-            "~/Library/Application Support/Code/User/workspaceStorage"
-        )
-    if sys_name == "Linux":
-        return os.path.expanduser("~/.config/Code/User/workspaceStorage")
-    # Windows
-    appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-    return os.path.join(appdata, "Code", "User", "workspaceStorage")
-
-
-def _default_projects_dir():
-    return os.path.join(os.path.expanduser("~"), ".claude", "projects")
-
 
 # ---------------------------------------------------------------------------
 # VS Code process check
@@ -358,8 +341,10 @@ def main():
     )
     args = ap.parse_args()
 
-    workspace_dir = args.workspace_dir or _default_workspace_dir()
-    projects_dir = args.projects_dir or _default_projects_dir()
+    workspace_dir = (
+        args.workspace_dir or default_vscode_workspace_storage_dir()
+    )
+    projects_dir = args.projects_dir or default_claude_sessions_index_dir()
 
     print("VS Code Session Recovery")
     print("-" * 60)

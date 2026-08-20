@@ -17,53 +17,33 @@ if _TOOLS_DIR not in sys.path:
 from platform_support import default_claude_paths  # noqa: E402
 from transcript_audit import (  # noqa: E402
     AuditConfigurationError,
+    DEFAULT_MAX_FILE_BYTES,
     DEFAULT_MAX_LINE_BYTES,
+    DEFAULT_MAX_LINES_PER_FILE,
     DEFAULT_MAX_NODES_PER_FILE,
     audit_transcript_paths,
     redact_user_home,
+    suppress_partial_analysis,
 )
+from transcript_files import build_transcript_path_inventory  # noqa: E402
 
 
 def _projects_transcripts(projects_dir):
     """Return direct slug-child JSONLs in deterministic physical order."""
-    try:
-        with os.scandir(projects_dir) as entries:
-            slugs = sorted(entries, key=lambda entry: entry.name)
-    except OSError as exc:
-        raise ValueError("projects scan root is unavailable") from exc
-    paths = []
-    errors = []
-    for slug in slugs:
-        try:
-            is_directory = slug.is_dir()
-        except OSError:
-            errors.append("slug_stat_failed")
-            continue
-        if not is_directory:
-            continue
-        try:
-            with os.scandir(slug.path) as entries:
-                names = sorted(entries, key=lambda entry: entry.name)
-        except OSError:
-            errors.append("slug_list_failed")
-            continue
-        for entry in names:
-            if not entry.name.endswith(".jsonl"):
-                continue
-            try:
-                is_file = entry.is_file()
-            except OSError:
-                errors.append("transcript_stat_failed")
-                continue
-            if is_file:
-                paths.append(os.path.abspath(entry.path))
-            else:
-                errors.append("transcript_not_regular_file")
-    scan_errors = [
-        {"reference": f"scan-entry-{index:04d}", "code": code}
-        for index, code in enumerate(errors, start=1)
+    inventory = build_transcript_path_inventory(
+        projects_dir,
+        session_id_is_valid=lambda _session_id: True,
+    )
+    paths = [
+        path
+        for _session_id, session_paths in inventory.by_session_id.items()
+        for path in session_paths
     ]
-    return paths, scan_errors
+    scan_errors = [
+        {"reference": f"scan-entry-{index:04d}", "code": error.code}
+        for index, error in enumerate(inventory.errors, start=1)
+    ]
+    return paths, scan_errors, inventory.is_complete
 
 
 def _resolve_paths(args):
@@ -84,14 +64,25 @@ def _resolve_paths(args):
 
     discovered = []
     scan_errors = []
+    inventory_complete = True
     if projects_dir is not None:
         if not os.path.isdir(projects_dir):
             raise ValueError("projects scan root is unavailable")
-        discovered, scan_errors = _projects_transcripts(projects_dir)
-    return sorted(set(discovered + explicit)), scan_errors
+        discovered, scan_errors, inventory_complete = _projects_transcripts(
+            projects_dir
+        )
+    return sorted(set(discovered + explicit)), scan_errors, inventory_complete
 
 
 def _public_result(result, *, include_paths=False, details=False, limit=30):
+    if result.get("_analysis_suppressed"):
+        return {
+            key: result[key]
+            for key in (
+                "schema_version", "read_only", "status", "limits", "summary",
+                "errors",
+            )
+        }
     public = {
         key: value
         for key, value in result.items()
@@ -119,6 +110,15 @@ def _print_human(result, *, include_paths=False, details=False, limit=30):
     print("Transcript integrity audit (read-only)")
     print("Status: {}".format(result["status"]))
     print("Scan errors: {}".format(summary.get("scan_error_count", 0)))
+    if result.get("_analysis_suppressed"):
+        print("Audited files: {}".format(summary["audited_file_count"]))
+        print("Retained bytes read: {}".format(summary["retained_bytes_read"]))
+        print("Retained physical lines: {}".format(
+            summary["retained_physical_line_count"]
+        ))
+        for error in result["errors"]:
+            print("  {} [{}]".format(error["reference"], error["code"]))
+        return
     print(
         "Files: expected={} present={} missing={} empty={} unreadable={}".format(
             summary["files_expected"], summary["files_present"],
@@ -183,6 +183,14 @@ def main(argv=None):
         help="Maximum retained bytes per physical line.",
     )
     parser.add_argument(
+        "--max-file-bytes", type=int, default=DEFAULT_MAX_FILE_BYTES,
+        help="Maximum bytes read from one transcript.",
+    )
+    parser.add_argument(
+        "--max-lines-per-file", type=int, default=DEFAULT_MAX_LINES_PER_FILE,
+        help="Maximum physical JSONL lines read from one transcript.",
+    )
+    parser.add_argument(
         "--max-nodes-per-file", type=int, default=DEFAULT_MAX_NODES_PER_FILE,
         help="Maximum UUID/message values retained per file.",
     )
@@ -191,19 +199,18 @@ def main(argv=None):
         parser.error("--limit must be non-negative")
 
     try:
-        paths, scan_errors = _resolve_paths(args)
+        paths, scan_errors, inventory_complete = _resolve_paths(args)
         result = audit_transcript_paths(
             paths,
             max_line_bytes=args.max_line_bytes,
+            max_file_bytes=args.max_file_bytes,
+            max_lines_per_file=args.max_lines_per_file,
             max_nodes_per_file=args.max_nodes_per_file,
         )
-        result["summary"]["scan_error_count"] = len(scan_errors)
-        if scan_errors:
-            result["errors"].extend(scan_errors)
-            result["errors"].sort(
-                key=lambda error: (error["reference"], error["code"])
-            )
-            result["status"] = "partial"
+        if not inventory_complete:
+            suppress_partial_analysis(result, extra_errors=scan_errors)
+        else:
+            result["summary"]["scan_error_count"] = 0
     except (AuditConfigurationError, ValueError) as exc:
         print("ERROR: {}".format(exc), file=sys.stderr)
         return 2

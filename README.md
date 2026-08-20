@@ -194,7 +194,7 @@ Takes a compressed snapshot of all three data layers that Claude Code depends on
 - **JSONL transcripts** — `~/.claude/projects/` (the actual conversation history)
 - **FTS5 transcript index** — if you have one configured
 
-Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. New zips include a reserved top-level `manifest.json` with `layout_version: 2` and a SHA-256 and byte count for every archived file. The Desktop metadata archive contains exactly direct, regular, restore-compatible `local_*.json` files under canonical `<account>/<organisation>/` directories; root files, nested files, temporary files, and auxiliary files are not archived. Its manifest lists every discovered canonical account/organisation pair, so logout/login rotation remains collision-free. The backup and restore commands share the v2 manifest, path, filename, and strict metadata-JSON validator. The completed temporary zip is CRC-, schema-, size-, payload-, and SHA-256-verified before atomic publication. Zero eligible metadata files, an incompatible pair or payload, verification failure, or replacement failure holds the layer and leaves any existing same-day final untouched. Old snapshots are automatically sent to the system Trash/Recycle Bin — the script's default retention is configured by `KEEP_DAYS`.
+Each layer is written to a dated zip under a `BACKUPS_ROOT` you configure at the top of the script. New zips include a reserved top-level `manifest.json` with `layout_version: 2` and a SHA-256 and byte count for every archived file. The Desktop metadata archive contains exactly direct, regular, restore-compatible `local_*.json` files under canonical `<account>/<organisation>/` directories; root files, nested files, temporary files, and auxiliary files are not archived. Its manifest lists every discovered canonical account/organisation pair, so logout/login rotation remains collision-free. The producer and restore companion share hard limits of 10,000 payload files, 512 MiB total uncompressed payload, 4 MiB for `manifest.json`, and 16 MiB per metadata file, along with the v2 manifest, path, filename, and strict metadata-JSON validator. Backup directory listings and traversal are separately bounded; an over-limit or inaccessible source refuses before publication. The completed temporary zip is CRC-, schema-, size-, payload-, and SHA-256-verified before atomic publication. Zero eligible metadata files, an incompatible pair or payload, any discovery or validation failure, or replacement failure holds the layer and leaves any existing same-day final untouched. Old snapshots are automatically sent to the system Trash/Recycle Bin — the script's default retention is configured by `KEEP_DAYS`.
 
 **Run it manually:**
 
@@ -244,9 +244,11 @@ canonical lowercase UUID-like identifiers. Every archive payload must be a
 safe, flat `local_*.json` metadata filename containing a bounded UTF-8 JSON
 object. Duplicate keys, non-finite numbers (including exponent overflow),
 overlong integers, excessive nesting, nested paths, binary files, invalid JSON,
-and Windows reserved names are refused without a traceback. CLI cap arguments
-can lower, but never raise, the built-in file,
-uncompressed-byte, and manifest-byte ceilings.
+and Windows reserved names are refused without a traceback. The built-in hard
+ceilings are 10,000 payload files, 512 MiB total uncompressed payload, 4 MiB
+for `manifest.json`, and 16 MiB per metadata file. CLI cap arguments can lower,
+but never raise, the archive-wide file, uncompressed-payload, and manifest
+ceilings.
 
 Dry-run offers apply guidance only when both live metadata and transcript
 inventories were completely enumerated, the live schema is recognised, and the
@@ -280,8 +282,10 @@ leases without deletion. On POSIX and other platforms, where Python exposes no p
 inode-bound conditional unlink/rmdir primitive, failed publication deliberately
 leaves created targets and directories and reports `rollback incomplete` rather
 than risking deletion of a name-swapped replacement. Verified staging links are
-still cleaned through live destination anchors. Output uses opaque pair labels
-unless `--include-paths` is explicitly requested. Exit statuses are `0` for a
+still cleaned through live destination anchors. Output always redacts account
+and organisation UUIDs to stable opaque pair labels; `--include-paths` adds the
+metadata root, opaque pair label, and filename without exposing either UUID.
+Exit statuses are `0` for a
 completed dry-run/apply, `2` for CLI usage, `3` for a safety refusal, and `4`
 for staging/publication failure.
 

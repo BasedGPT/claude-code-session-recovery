@@ -388,7 +388,10 @@ def main():
             rows = json.load(fh)
 
     schema_ok = snapshot["schema_version"] == "recognised"
-    matches = [row for row in rows if eval_match(row.get("match", {}), snapshot)]
+    matches = (
+        [row for row in rows if eval_match(row.get("match", {}), snapshot)]
+        if schema_ok else []
+    )
     matches = _suppress_ambiguous_synthesis_routes(matches, snapshot)
 
     # VS Code session cache check — live mode only; skipped in fixture/json mode

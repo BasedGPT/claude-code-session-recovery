@@ -5,7 +5,6 @@ metadata/transcript relationship and deterministic diagnosis token; command
 parsing and human-facing output remain with their executable tools.
 """
 import collections
-import glob
 import hashlib
 import json
 import os
@@ -15,10 +14,10 @@ import re
 import subprocess
 
 from transcript_files import (
-    build_transcript_index,
+    build_transcript_path_inventory,
     count_assistant_records,
-    iter_transcript_paths,
 )
+from session_metadata import build_metadata_path_inventory
 from platform_support import (
     default_claude_appdata_dir,
     default_claude_paths,
@@ -231,36 +230,45 @@ def _detect_running_inside_desktop():
 
 def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
     """Probe state and return the deterministic diagnosis snapshot."""
-    metadata_files = []
+    metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+    metadata_files = [
+        (record.path, record.data) for record in metadata_inventory.records
+    ]
     desktop_session_pairs = []
-    for account_uuid, organisation_uuid, metadata_dir in find_metadata_directories(appdata_claude_dir):
-        local_files = [
-            path for path in sorted(glob.glob(os.path.join(metadata_dir, "local_*.json")))
-            if os.path.isfile(path)
+    if metadata_inventory.is_complete:
+        metadata_counts = collections.Counter(
+            (record.account_uuid, record.organisation_uuid)
+            for record in metadata_inventory.records
+        )
+        desktop_session_pairs = [
+            {
+                "account_uuid": account_uuid,
+                "organisation_uuid": organisation_uuid,
+                "local_metadata_count": metadata_counts[
+                    (account_uuid, organisation_uuid)
+                ],
+            }
+            for account_uuid, organisation_uuid, _path
+            in metadata_inventory.directories
         ]
-        desktop_session_pairs.append({
-            "account_uuid": account_uuid,
-            "organisation_uuid": organisation_uuid,
-            "local_metadata_count": len(local_files),
-        })
-        for path in local_files:
-            try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    metadata_files.append((path, json.load(handle)))
-            except (OSError, json.JSONDecodeError):
-                continue
 
-    transcript_index = build_transcript_index(projects_dir)
+    transcript_inventory = build_transcript_path_inventory(projects_dir)
+    transcript_paths = transcript_inventory.by_session_id
+    cross_store_complete = (
+        metadata_inventory.is_complete and transcript_inventory.is_complete
+    )
     total_metadata_count = len(metadata_files)
     missing_cli_count = sum(
         1 for _path, data in metadata_files
         if not data.get("cliSessionId") and not data.get("isArchived")
     )
     with_cli_count = sum(1 for _path, data in metadata_files if data.get("cliSessionId"))
-    dangling_cli_count = sum(
-        1 for _path, data in metadata_files
-        if data.get("cliSessionId") and data["cliSessionId"] not in transcript_index
-    )
+    dangling_cli_count = 0
+    if cross_store_complete:
+        dangling_cli_count = sum(
+            1 for _path, data in metadata_files
+            if data.get("cliSessionId") and data["cliSessionId"] not in transcript_paths
+        )
     cli_counts = collections.Counter(
         data.get("cliSessionId") for _path, data in metadata_files if data.get("cliSessionId")
     )
@@ -278,43 +286,60 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         cwd_type = classify_cwd(cwd)
         cwd_prefix_types[cwd_type] = cwd_prefix_types.get(cwd_type, 0) + 1
         cli_session_id = data.get("cliSessionId")
-        if cwd_type == "junction" and cli_session_id in transcript_index:
+        if (
+            cross_store_complete
+            and cwd_type == "junction"
+            and cli_session_id in transcript_paths
+        ):
             try:
                 if slug_from_path(os.path.realpath(cwd)) != slug_from_path(cwd):
                     junction_mismatch_count += 1
             except OSError:
                 pass
 
-    all_transcript_ids = set(transcript_index)
+    all_transcript_ids = set(transcript_paths)
     referenced_ids = {
         data.get("cliSessionId") for _path, data in metadata_files if data.get("cliSessionId")
     }
-    orphan_count = len(all_transcript_ids - referenced_ids)
+    orphan_count = (
+        len(all_transcript_ids - referenced_ids) if cross_store_complete else 0
+    )
 
     cwd_slug_mismatch_count = 0
-    for _path, data in metadata_files:
-        cli_session_id = data.get("cliSessionId")
-        cwd = data.get("cwd", "")
-        if not cli_session_id or not cwd or cli_session_id not in transcript_index:
-            continue
-        actual_slug = os.path.basename(os.path.dirname(transcript_index[cli_session_id]))
-        if actual_slug != slug_encode(cwd):
-            cwd_slug_mismatch_count += 1
+    if cross_store_complete:
+        for _path, data in metadata_files:
+            cli_session_id = data.get("cliSessionId")
+            cwd = data.get("cwd", "")
+            if not cli_session_id or not cwd or cli_session_id not in transcript_paths:
+                continue
+            actual_slugs = {
+                os.path.basename(os.path.dirname(path))
+                for path in transcript_paths[cli_session_id]
+            }
+            if slug_encode(cwd) not in actual_slugs:
+                cwd_slug_mismatch_count += 1
 
     truncated_count = 0
-    if not fixture_mode:
+    if not fixture_mode and cross_store_complete:
         for _path, data in metadata_files:
             cli_session_id = data.get("cliSessionId")
             completed_turns = data.get("completedTurns")
-            if not cli_session_id or not completed_turns or cli_session_id not in transcript_index:
+            if (
+                not cli_session_id
+                or not completed_turns
+                or cli_session_id not in transcript_paths
+                or len(transcript_paths[cli_session_id]) != 1
+            ):
                 continue
             if completed_turns <= 0:
                 continue
-            if count_assistant_records(transcript_index[cli_session_id], stop_at=completed_turns) < completed_turns:
+            if count_assistant_records(
+                transcript_paths[cli_session_id][0], stop_at=completed_turns
+            ) < completed_turns:
                 truncated_count += 1
 
     schema_version = "unrecognised"
-    if total_metadata_count > 0:
+    if metadata_inventory.is_complete and total_metadata_count > 0:
         known_fields = {"sessionId", "cwd", "createdAt", "model", "title"}
         if any(known_fields.intersection(data.keys()) for _path, data in metadata_files[:5]):
             schema_version = "recognised"
@@ -346,7 +371,7 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
         "cwd_slug_mismatch_count": cwd_slug_mismatch_count,
         "truncated_jsonl_count": truncated_count,
         "cwd_prefix_types": cwd_prefix_types,
-        "jsonl_count": len(transcript_index),
+        "jsonl_count": transcript_inventory.unique_session_id_count,
         "schema_version": schema_version,
         "desktop_version": desktop_version,
         "cli_version": cli_version,
@@ -459,7 +484,7 @@ def scan_vscode_dropped_sessions(projects_dir):
             continue
         try:
             cache = json.loads(row[0])
-        except (json.JSONDecodeError, TypeError):
+        except (ValueError, TypeError):
             continue
         if not isinstance(cache, list):
             continue
@@ -475,11 +500,12 @@ def scan_vscode_dropped_sessions(projects_dir):
 
     if database_count == 0:
         return 0, 0
+    inventory = build_transcript_path_inventory(
+        projects_dir, lambda value: bool(uuid_pattern.match(value))
+    )
+    if not inventory.is_complete:
+        return 0, database_count
     dropped_count = sum(
-        1
-        for session_id, _path in iter_transcript_paths(
-            projects_dir, lambda value: bool(uuid_pattern.match(value))
-        )
-        if session_id not in cached_ids
+        1 for session_id in inventory.by_session_id if session_id not in cached_ids
     )
     return dropped_count, database_count

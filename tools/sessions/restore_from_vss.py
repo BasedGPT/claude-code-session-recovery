@@ -58,6 +58,11 @@ sys.path.insert(0, TOOL_DIR)
 sys.path.insert(0, os.path.dirname(TOOL_DIR))
 from lock_utils import acquire_lock, release_lock  # noqa: E402
 from platform_support import desktop_process_check_command, desktop_process_running  # noqa: E402
+from session_metadata import (  # noqa: E402
+    IncompleteMetadataInventoryError,
+    build_metadata_path_inventory,
+    require_complete_metadata_inventory,
+)
 
 # --- Configuration ---
 # Where JSONL transcripts live. Override with --projects-dir for testing.
@@ -437,29 +442,23 @@ def _fx_count_records(path):
 
 def _fx_scan_sessions(state_dir):
     """Return session dicts from state/appdata/Claude/claude-code-sessions/."""
+    inventory = build_metadata_path_inventory(
+        os.path.join(state_dir, "appdata", "Claude")
+    )
+    require_complete_metadata_inventory(inventory)
     sessions = []
-    appdata = os.path.join(state_dir, "appdata", "Claude", "claude-code-sessions")
-    if not os.path.isdir(appdata):
-        return sessions
-    for dirpath, _dirs, files in os.walk(appdata):
-        for fname in sorted(files):
-            if not (fname.startswith("local_") and fname.endswith(".json")):
-                continue
-            try:
-                with open(os.path.join(dirpath, fname), encoding="utf-8") as fh:
-                    data = json.load(fh)
-            except (OSError, ValueError):
-                continue
-            cli_sid = data.get("cliSessionId") or data.get("sessionId", "")
-            if not cli_sid:
-                continue
-            sessions.append({
-                "meta_file": fname,
-                "cli_session_id": cli_sid,
-                "short_id": cli_sid[:8],
-                "title": data.get("title", "(no title)"),
-                "cwd_slug": _fx_slug_encode(data.get("cwd", "")),
-            })
+    for record in inventory.records:
+        data = record.data
+        cli_sid = data.get("cliSessionId") or data.get("sessionId", "")
+        if not cli_sid:
+            continue
+        sessions.append({
+            "meta_file": os.path.basename(record.path),
+            "cli_session_id": cli_sid,
+            "short_id": cli_sid[:8],
+            "title": data.get("title", "(no title)"),
+            "cwd_slug": _fx_slug_encode(data.get("cwd", "")),
+        })
     return sessions
 
 
@@ -586,7 +585,17 @@ def main():
     args = ap.parse_args()
 
     if args.state is not None:
-        _run_fixture_mode(os.path.abspath(args.state), args.diagnosis_id, args.apply)
+        try:
+            _run_fixture_mode(
+                os.path.abspath(args.state), args.diagnosis_id, args.apply
+            )
+        except IncompleteMetadataInventoryError as exc:
+            print(
+                "REFUSED: Metadata inventory is partial; "
+                "no VSS restore candidates were selected."
+            )
+            print("Inventory errors: {}".format(exc))
+            sys.exit(3)
         sys.exit(0)
 
     DRY_RUN = not args.apply  # noqa: N806

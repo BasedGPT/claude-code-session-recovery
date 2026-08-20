@@ -44,7 +44,7 @@ try:
         find_metadata_directories,
         slug_encode,
     )
-    from transcript_files import build_transcript_index
+    from transcript_files import build_transcript_path_inventory
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/sweep_junction_canonical_cwds.py")
@@ -80,7 +80,17 @@ def main():
               "unsupported state to the maintainer.", file=sys.stderr)
         return 2
 
-    jsonl_index = build_transcript_index(projects_dir)
+    inventory = build_transcript_path_inventory(projects_dir)
+    if not inventory.is_complete:
+        print(
+            "PARTIAL: transcript inventory is incomplete; "
+            "worktree transcript conclusions were suppressed."
+        )
+        print("Inventory errors: {}".format(
+            ", ".join(error.code for error in inventory.errors)
+        ))
+        return 0
+    jsonl_index = inventory.by_session_id
 
     counts = {"junction": 0, "canonical": 0, "other": 0}
     jsonl_at_expected = 0
@@ -125,13 +135,19 @@ def main():
 
             expected_slug = slug_encode(cwd)
             if cli in jsonl_index:
-                actual_slug = os.path.basename(os.path.dirname(jsonl_index[cli]))
-                if actual_slug == expected_slug:
+                actual_slugs = {
+                    os.path.basename(os.path.dirname(path))
+                    for path in jsonl_index[cli]
+                }
+                if expected_slug in actual_slugs:
                     jsonl_at_expected += 1
                 else:
                     jsonl_at_other_slug += 1
+                    actual_slug_display = ",".join(sorted(actual_slugs))
                     issues.append(("JSONL_AT_OTHER_SLUG", fname[:40],
-                                   "expected={} actual={}".format(expected_slug[:30], actual_slug[:30]),
+                                   "actual={} expected={}".format(
+                                       actual_slug_display[:30], expected_slug[:30]
+                                   ),
                                    title))
             else:
                 jsonl_absent += 1

@@ -5,9 +5,68 @@ tools.  It deliberately does not print records or paths: callers decide what
 is safe to expose in their own CLI output.
 """
 import datetime
-import glob
 import json
 import os
+from dataclasses import dataclass
+
+
+class DuplicateTranscriptIdError(RuntimeError):
+    """Raised when a UUID-keyed compatibility index would be ambiguous."""
+
+    def __init__(self, session_ids):
+        self.session_ids = tuple(sorted(set(session_ids)))
+        detail = ", ".join(self.session_ids[:5])
+        if len(self.session_ids) > 5:
+            detail += ", ..."
+        super().__init__(
+            "duplicate transcript session IDs require multimap handling: " + detail
+        )
+
+
+class IncompleteTranscriptInventoryError(RuntimeError):
+    """Raised when a selector cannot prove transcript discovery was complete."""
+
+    def __init__(self, errors):
+        self.errors = tuple(errors)
+        codes = sorted({error.code for error in self.errors})
+        detail = ", ".join(codes[:5])
+        if len(codes) > 5:
+            detail += ", ..."
+        super().__init__("transcript inventory is partial: " + detail)
+
+
+@dataclass(frozen=True)
+class TranscriptInventoryError:
+    """Opaque transcript discovery error safe for default CLI output."""
+
+    reference: str
+    code: str
+
+
+@dataclass(frozen=True)
+class TranscriptPathInventory:
+    """Lossless physical transcript inventory grouped by filename stem.
+
+    ``by_session_id`` keeps every physical path.  Callers that need one path
+    must prove the tuple has exactly one member before choosing it.
+    """
+
+    by_session_id: dict
+    physical_count: int
+    duplicate_session_ids: tuple
+    status: str
+    errors: tuple
+
+    @property
+    def unique_session_id_count(self):
+        return len(self.by_session_id)
+
+    @property
+    def is_complete(self):
+        return self.status == "complete"
+
+    def paths_for(self, session_id):
+        return self.by_session_id.get(session_id, ())
 
 
 def iter_transcript_records(path, *, errors="strict", object_records=True):
@@ -27,7 +86,7 @@ def iter_transcript_records(path, *, errors="strict", object_records=True):
                     continue
                 try:
                     record = json.loads(line)
-                except json.JSONDecodeError:
+                except ValueError:
                     continue
                 if isinstance(record, dict) or not object_records:
                     yield record
@@ -68,27 +127,119 @@ def iso_timestamp_ms(value):
 
 
 def iter_transcript_paths(projects_dir, session_id_is_valid=None):
-    """Yield ``(session_id, absolute_jsonl_path)`` for direct slug children."""
+    """Yield known transcript paths, preserving the historical iterator API.
+
+    The iterator raises :class:`IncompleteTranscriptInventoryError` before
+    yielding any path when discovery is partial.  Callers that need to inspect
+    the known subset and its errors must use
+    :func:`build_transcript_path_inventory` directly.
+    """
+    inventory = build_transcript_path_inventory(projects_dir, session_id_is_valid)
+    require_complete_transcript_inventory(inventory)
+    for session_id, paths in inventory.by_session_id.items():
+        for path in paths:
+            yield session_id, path
+
+
+def build_transcript_path_inventory(projects_dir, session_id_is_valid=None):
+    """Return every physical transcript path grouped by session ID.
+
+    The grouping is lossless: duplicate IDs under different slug directories
+    are retained in sorted path order rather than silently overwriting one
+    another.
+    """
     if session_id_is_valid is None:
         session_id_is_valid = lambda session_id: len(session_id) == 36
-    if not os.path.isdir(projects_dir):
-        return
-    for slug in sorted(os.listdir(projects_dir)):
-        slug_dir = os.path.join(projects_dir, slug)
-        if not os.path.isdir(slug_dir):
+
+    grouped = {}
+    error_codes = []
+    projects_dir = os.path.abspath(projects_dir)
+    try:
+        with os.scandir(projects_dir) as entries:
+            slug_entries = sorted(entries, key=lambda entry: entry.name)
+    except FileNotFoundError:
+        # Session-state fixtures and fresh installs legitimately have no
+        # projects directory.  Known absence is a complete empty inventory;
+        # an existing but inaccessible root remains partial below.
+        slug_entries = []
+    except OSError:
+        slug_entries = []
+        error_codes.append("projects_root_list_failed")
+
+    for slug_entry in slug_entries:
+        try:
+            is_directory = slug_entry.is_dir()
+        except OSError:
+            error_codes.append("slug_stat_failed")
             continue
-        for path in glob.glob(os.path.join(slug_dir, "*.jsonl")):
-            session_id = os.path.splitext(os.path.basename(path))[0]
+        if not is_directory:
+            continue
+        try:
+            with os.scandir(slug_entry.path) as entries:
+                transcript_entries = sorted(entries, key=lambda entry: entry.name)
+        except OSError:
+            error_codes.append("slug_list_failed")
+            continue
+        for entry in transcript_entries:
+            if not entry.name.endswith(".jsonl"):
+                continue
+            try:
+                is_file = entry.is_file()
+            except OSError:
+                error_codes.append("transcript_stat_failed")
+                continue
+            if not is_file:
+                error_codes.append("transcript_not_regular_file")
+                continue
+            session_id = os.path.splitext(entry.name)[0]
             if session_id_is_valid(session_id):
-                yield session_id, path
+                grouped.setdefault(session_id, []).append(os.path.abspath(entry.path))
+
+    by_session_id = {
+        session_id: tuple(sorted(paths))
+        for session_id, paths in sorted(grouped.items())
+    }
+    duplicate_session_ids = tuple(
+        session_id for session_id, paths in by_session_id.items() if len(paths) > 1
+    )
+    return TranscriptPathInventory(
+        by_session_id=by_session_id,
+        physical_count=sum(len(paths) for paths in by_session_id.values()),
+        duplicate_session_ids=duplicate_session_ids,
+        status="partial" if error_codes else "complete",
+        errors=tuple(
+            TranscriptInventoryError(
+                reference="inventory-entry-{:04d}".format(index),
+                code=code,
+            )
+            for index, code in enumerate(error_codes, start=1)
+        ),
+    )
+
+
+def require_complete_transcript_inventory(inventory):
+    """Return ``inventory`` or fail closed when discovery was incomplete."""
+    if not inventory.is_complete:
+        raise IncompleteTranscriptInventoryError(inventory.errors)
+    return inventory
 
 
 def build_transcript_index(projects_dir, session_id_is_valid=None):
-    """Return ``{session_id: absolute_jsonl_path}`` for direct slug children."""
-    index = {}
-    for session_id, path in iter_transcript_paths(projects_dir, session_id_is_valid):
-        index[session_id] = path
-    return index
+    """Return a unique ``{session_id: absolute_jsonl_path}`` compatibility map.
+
+    Historically this helper silently retained the last path seen for a
+    duplicate UUID.  That behaviour could direct a mutator at an arbitrary
+    transcript, so callers must now migrate to
+    :func:`build_transcript_path_inventory` when duplicates exist.
+    """
+    inventory = build_transcript_path_inventory(projects_dir, session_id_is_valid)
+    require_complete_transcript_inventory(inventory)
+    if inventory.duplicate_session_ids:
+        raise DuplicateTranscriptIdError(inventory.duplicate_session_ids)
+    return {
+        session_id: paths[0]
+        for session_id, paths in inventory.by_session_id.items()
+    }
 
 
 def count_assistant_records(path, stop_at=None):

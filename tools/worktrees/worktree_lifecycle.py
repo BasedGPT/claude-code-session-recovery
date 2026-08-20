@@ -98,7 +98,7 @@ def update_marker_manifest(worktree_path, claimed_marker, manifest_path):
     try:
         with open(marker_path, encoding='utf-8') as handle:
             payload = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         payload = {}
     payload['manifest_path'] = manifest_path
     payload['updated_at'] = _iso_now()

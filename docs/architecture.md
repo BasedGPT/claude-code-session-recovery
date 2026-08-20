@@ -34,7 +34,9 @@ The code keeps command-line policy separate from reusable implementation:
 |---|---|
 | `tools/session_state.py` | Read-only metadata discovery, structural snapshot construction, troubleshooting matching, and diagnosis-token generation |
 | `tools/transcript_files.py` | Transcript discovery and caller-selectable JSONL interpretation |
+| `tools/transcript_audit.py` | Bounded, read-only transcript byte/JSON/graph facts shared by audit commands |
 | `tools/mutator_safety.py` | Policy-free mutation mechanics: invocation checks, fixture/live path resolution, fresh diagnosis, verified backup publication, and file writes |
+| `tools/session_metadata.py` | Complete/partial discovery of account/org `local_*.json` metadata; mutation selectors refuse opaque discovery errors before inference |
 | `tools/worktrees/worktree_lifecycle.py` | Worktree marker claims, sentinel content, and quiet-stub implementation |
 | `tests/fixture_scenarios.py` | Isolated scenario execution shared by fixture verification and golden regeneration |
 
@@ -251,7 +253,7 @@ The predicate is evaluated against the snapshot `diagnose.py` produces from the 
 | `cwd_slug_mismatch_count` | int | Metadata where the cwd slug-encodes differently from the actual JSONL directory |
 | `cwd_prefix_types` | object | Counts by type: `junction`, `canonical`, `bare_root`, `other` |
 | `jsonl_orphan_count` | int | JSONLs with no metadata referencing them |
-| `jsonl_count` | int | Total `.jsonl` files |
+| `jsonl_count` | int | Unique session IDs represented by direct `.jsonl` paths; duplicate physical IDs are inspected by the read-only identity audit |
 | `schema_version` | string | `"recognised"` or `"unrecognised"` |
 | `desktop_version` | string \| null | Detected from `%LOCALAPPDATA%\AnthropicClaude\app-X.Y.Z\` |
 | `cli_version` | string \| null | From `claude --version` if on PATH |

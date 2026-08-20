@@ -35,8 +35,6 @@ Usage:
     python tools/sessions/synth_session_metadata.py --diagnosis-id <hex> --apply
 """
 import argparse
-import glob
-import json
 import os
 import sys
 import uuid
@@ -45,13 +43,24 @@ from datetime import datetime, timezone
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import default_claude_paths, find_metadata_directories
+    from session_metadata import (
+        IncompleteMetadataInventoryError,
+        build_metadata_path_inventory,
+        require_complete_metadata_inventory,
+    )
+    from session_state import default_claude_paths
     from platform_support import desktop_process_check_command, desktop_process_running
     from mutator_safety import (
         atomic_copy_file, atomic_write_json, current_snapshot_and_diagnosis_id,
         diagnosis_mode, resolve_state_paths,
     )
-    from transcript_files import build_transcript_index, iso_timestamp_ms, synthesis_summary
+    from transcript_files import (
+        IncompleteTranscriptInventoryError,
+        build_transcript_path_inventory,
+        iso_timestamp_ms,
+        require_complete_transcript_inventory,
+        synthesis_summary,
+    )
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/synth_session_metadata.py")
@@ -63,6 +72,24 @@ APPDATA_CLAUDE_DIR, PROJECTS_DIR = default_claude_paths()
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(TOOL_DIR, "synth-out")
+
+
+class MetadataDestinationError(RuntimeError):
+    """Raised when synthesis cannot prove one metadata destination root."""
+
+    def __init__(self, directory_count):
+        self.directory_count = directory_count
+        if directory_count > 1:
+            message = (
+                "Multiple Claude Desktop account/organisation metadata pairs "
+                "found; synthesis destination is ambiguous"
+            )
+        else:
+            message = (
+                "metadata synthesis requires exactly one account/organisation "
+                "destination; found {}".format(directory_count)
+            )
+        super().__init__(message)
 
 
 # ---------------------------------------------------------------------------
@@ -159,33 +186,37 @@ def synthesise(cli_session_id, jsonl_path):
 # Indexing
 # ---------------------------------------------------------------------------
 
-def _find_orphan_jsonls(appdata_claude_dir, projects_dir):
+def _find_orphan_jsonls(appdata_claude_dir, projects_dir, metadata_inventory=None):
     """Return {session_id: absolute_jsonl_path} for JSONLs with no metadata."""
-    meta_cli_ids = set()
-    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
-        for f in glob.glob(os.path.join(meta_dir, "local_*.json")):
-            try:
-                with open(f, "r", encoding="utf-8") as fh:
-                    d = json.load(fh)
-            except (OSError, json.JSONDecodeError):
-                continue
-            cli = d.get("cliSessionId")
-            if cli:
-                meta_cli_ids.add(cli)
+    if metadata_inventory is None:
+        metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+    require_complete_metadata_inventory(metadata_inventory)
+    meta_cli_ids = {
+        record.data.get("cliSessionId")
+        for record in metadata_inventory.records
+        if record.data.get("cliSessionId")
+    }
 
-    jsonl_index = build_transcript_index(projects_dir)
-    return {sid: path for sid, path in jsonl_index.items() if sid not in meta_cli_ids}
+    inventory = build_transcript_path_inventory(projects_dir)
+    require_complete_transcript_inventory(inventory)
+    # Synthesis creates one metadata pointer per transcript.  Duplicate IDs
+    # are deliberately excluded because choosing one physical path would be
+    # ambiguous and could manufacture a false recovery entry.
+    return {
+        sid: paths[0]
+        for sid, paths in inventory.by_session_id.items()
+        if sid not in meta_cli_ids and len(paths) == 1
+    }
 
 
-def _find_meta_dir(appdata_claude_dir):
-    """Return the only metadata directory, or fail closed on ambiguity."""
-    candidates = list(find_metadata_directories(appdata_claude_dir))
-    if len(candidates) > 1:
-        raise RuntimeError(
-            "Multiple Claude Desktop account/organisation metadata pairs found; "
-            "synthesis destination is ambiguous"
-        )
-    return candidates[0][2] if candidates else None
+def _find_meta_dir(appdata_claude_dir, metadata_inventory=None):
+    """Return the only complete, unambiguous metadata destination."""
+    if metadata_inventory is None:
+        metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+    require_complete_metadata_inventory(metadata_inventory)
+    if len(metadata_inventory.directories) != 1:
+        raise MetadataDestinationError(len(metadata_inventory.directories))
+    return metadata_inventory.directories[0][2]
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +272,18 @@ def main():
     appdata_claude_dir, projects_dir = resolve_state_paths(
         args.state, APPDATA_CLAUDE_DIR, PROJECTS_DIR,
     )
+    try:
+        metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+        require_complete_metadata_inventory(metadata_inventory)
+    except IncompleteMetadataInventoryError as exc:
+        print("REFUSED: Metadata inventory is partial; no orphan inference was made.")
+        print("Inventory errors: {}".format(exc))
+        sys.exit(3)
+    try:
+        meta_dir = _find_meta_dir(appdata_claude_dir, metadata_inventory)
+    except MetadataDestinationError as exc:
+        print("REFUSED: {}".format(exc))
+        sys.exit(3)
 
     snapshot, current_id = current_snapshot_and_diagnosis_id(
         appdata_claude_dir, projects_dir, fixture_mode=(args.state is not None),
@@ -273,8 +316,14 @@ def main():
         print("Then re-run with --apply.")
         sys.exit(3)
 
-    orphans = _find_orphan_jsonls(appdata_claude_dir, projects_dir)
-    meta_dir = _find_meta_dir(appdata_claude_dir)
+    try:
+        orphans = _find_orphan_jsonls(
+            appdata_claude_dir, projects_dir, metadata_inventory
+        )
+    except IncompleteTranscriptInventoryError as exc:
+        print("REFUSED: Transcript inventory is partial; no synthetic metadata was staged.")
+        print("Inventory errors: {}".format(exc))
+        sys.exit(3)
 
     used_id = args.diagnosis_id if not force_mode else "(forced-audit-only)"
     print("Orphan JSONLs (no metadata): {}".format(len(orphans)))

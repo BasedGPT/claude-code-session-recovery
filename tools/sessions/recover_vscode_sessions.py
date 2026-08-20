@@ -63,7 +63,12 @@ import time
 
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
-from transcript_files import build_transcript_index, cache_metadata  # noqa: E402
+from transcript_files import (  # noqa: E402
+    IncompleteTranscriptInventoryError,
+    build_transcript_path_inventory,
+    cache_metadata,
+    require_complete_transcript_inventory,
+)
 
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -170,7 +175,7 @@ def _find_claude_dbs(workspace_dir):
             continue
         try:
             cache = json.loads(row[0])
-        except (json.JSONDecodeError, TypeError):
+        except (ValueError, TypeError):
             continue
         if not isinstance(cache, list):
             continue
@@ -272,7 +277,7 @@ def _apply_recovery(db_path, new_entries):
             )
         try:
             current_cache = json.loads(row[0])
-        except (json.JSONDecodeError, TypeError) as exc:
+        except (ValueError, TypeError) as exc:
             conn.execute("ROLLBACK")
             raise RuntimeError(
                 f"Cache JSON unreadable in {db_path!r}: {exc}"
@@ -387,10 +392,33 @@ def main():
 
     # --- Scan disk for all JSONL session files ---
     print("Scanning transcript files on disk...")
-    disk_index = build_transcript_index(
+    inventory = build_transcript_path_inventory(
         projects_dir, lambda session_id: bool(_UUID_RE.match(session_id))
     )
-    print(f"Found {len(disk_index)} transcript file(s) on disk.")
+    try:
+        require_complete_transcript_inventory(inventory)
+    except IncompleteTranscriptInventoryError as exc:
+        print(
+            "REFUSED: Transcript inventory is partial; "
+            "no UUID-keyed cache entries were selected."
+        )
+        print(f"Inventory errors: {exc}")
+        return 3
+    disk_index = {
+        session_id: paths[0]
+        for session_id, paths in inventory.by_session_id.items()
+        if len(paths) == 1
+    }
+    ambiguous_ids = sorted(
+        session_id for session_id, paths in inventory.by_session_id.items()
+        if len(paths) > 1
+    )
+    print(f"Found {inventory.physical_count} transcript file(s) on disk.")
+    if ambiguous_ids:
+        print(
+            f"Skipped {len(ambiguous_ids)} ambiguous session ID(s); "
+            "no UUID-keyed cache entry will be chosen for them."
+        )
     print()
 
     # --- Find missing entries ---
@@ -484,4 +512,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

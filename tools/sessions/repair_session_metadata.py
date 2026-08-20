@@ -29,8 +29,6 @@ Usage:
     python tools/sessions/repair_session_metadata.py --diagnosis-id <hex> --window-ms 8000
 """
 import argparse
-import glob
-import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -40,13 +38,23 @@ _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
     from platform_support import desktop_process_check_command, desktop_process_running
-    from session_state import default_claude_paths, find_metadata_directories
+    from session_metadata import (
+        IncompleteMetadataInventoryError,
+        build_metadata_path_inventory,
+        require_complete_metadata_inventory,
+    )
+    from session_state import default_claude_paths
     from mutator_safety import (
         current_snapshot_and_diagnosis_id, diagnosis_mode,
         metadata_backup_path, resolve_state_paths, verified_backup,
         write_json_in_place,
     )
-    from transcript_files import build_transcript_index, first_iso_timestamp_and_user
+    from transcript_files import (
+        IncompleteTranscriptInventoryError,
+        build_transcript_path_inventory,
+        first_iso_timestamp_and_user,
+        require_complete_transcript_inventory,
+    )
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/repair_session_metadata.py")
@@ -119,39 +127,44 @@ def _parse_created_at_ms(value):
     return None
 
 
-def index_metadata(appdata_claude_dir):
+def index_metadata(appdata_claude_dir, inventory=None):
     """Return (by_cli, broken_no_cli).
 
     by_cli: {cliSessionId: (path, parsed_dict)}
     broken_no_cli: [(path, parsed_dict)] for files lacking cliSessionId
     """
+    if inventory is None:
+        inventory = build_metadata_path_inventory(appdata_claude_dir)
+    require_complete_metadata_inventory(inventory)
     by_cli = {}
     broken = []
-    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
-        for f in sorted(glob.glob(os.path.join(meta_dir, "local_*.json"))):
-            try:
-                with open(f, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-            except (OSError, json.JSONDecodeError):
-                continue
-            cli = data.get("cliSessionId")
-            if cli:
-                by_cli[cli] = (f, data)
-            else:
-                # Archived sessions are hidden from Desktop's picker, so
-                # repairing a missing cliSessionId on one has no user-visible
-                # effect. Skip them so the repair loop does not attempt
-                # timestamp-matching against the JSONL pool for entries the
-                # user deliberately archived.
-                if not data.get("isArchived"):
-                    broken.append((f, data))
+    for record in inventory.records:
+        data = record.data
+        cli = data.get("cliSessionId")
+        if cli:
+            by_cli[cli] = (record.path, data)
+        else:
+            # Archived sessions are hidden from Desktop's picker, so
+            # repairing a missing cliSessionId on one has no user-visible
+            # effect. Skip them so the repair loop does not attempt
+            # timestamp-matching against the JSONL pool for entries the
+            # user deliberately archived.
+            if not data.get("isArchived"):
+                broken.append((record.path, data))
     return by_cli, broken
 
 
 def index_jsonls(projects_dir):
     """Return {session_id: (jsonl_path, first_ts_ms, first_user_text)}."""
     out = {}
-    for sid, path in build_transcript_index(projects_dir).items():
+    inventory = build_transcript_path_inventory(projects_dir)
+    require_complete_transcript_inventory(inventory)
+    # A single metadata pointer cannot safely choose among duplicate physical
+    # paths.  Leave those IDs out so every repair route fails closed.
+    for sid, paths in inventory.by_session_id.items():
+        if len(paths) != 1:
+            continue
+        path = paths[0]
         first_ts_ms, first_user = first_iso_timestamp_and_user(path)
         out[sid] = (path, first_ts_ms, first_user)
     return out
@@ -262,6 +275,13 @@ def main():
     appdata_claude_dir, projects_dir = resolve_state_paths(
         args.state, APPDATA_CLAUDE_DIR, PROJECTS_DIR,
     )
+    try:
+        metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+        require_complete_metadata_inventory(metadata_inventory)
+    except IncompleteMetadataInventoryError as exc:
+        print("REFUSED: Metadata inventory is partial; no repair matches were selected.")
+        print("Inventory errors: {}".format(exc))
+        sys.exit(3)
 
     # Compute current snapshot and diagnosis ID
     snapshot, current_id = current_snapshot_and_diagnosis_id(
@@ -300,8 +320,13 @@ def main():
         sys.exit(3)
 
     # Index state
-    by_cli, broken = index_metadata(appdata_claude_dir)
-    jsonl_index = index_jsonls(projects_dir)
+    try:
+        by_cli, broken = index_metadata(appdata_claude_dir, metadata_inventory)
+        jsonl_index = index_jsonls(projects_dir)
+    except IncompleteTranscriptInventoryError as exc:
+        print("REFUSED: Transcript inventory is partial; no metadata matches were selected.")
+        print("Inventory errors: {}".format(exc))
+        sys.exit(3)
 
     used_diagnosis_id = args.diagnosis_id if not force_mode else "(forced-audit-only)"
     print("Metadata files: {} (linked: {}, missing cliSessionId: {})".format(

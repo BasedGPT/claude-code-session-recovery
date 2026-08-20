@@ -29,8 +29,6 @@ Usage:
     python tools/sessions/cleanup_synth_duplicates.py --diagnosis-id <hex> --apply
 """
 import argparse
-import glob
-import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -40,7 +38,12 @@ _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
     from platform_support import desktop_process_check_command, desktop_process_running
-    from session_state import default_claude_appdata_dir, find_metadata_directories
+    from session_metadata import (
+        IncompleteMetadataInventoryError,
+        build_metadata_path_inventory,
+        require_complete_metadata_inventory,
+    )
+    from session_state import default_claude_appdata_dir
     from mutator_safety import (
         current_snapshot_and_diagnosis_id, diagnosis_mode, resolve_state_paths,
         metadata_backup_path, verified_backup,
@@ -104,18 +107,12 @@ def _created_display(ms):
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def index_metadata(appdata_claude_dir):
+def index_metadata(appdata_claude_dir, inventory=None):
     """Return list of (path, parsed_dict) for all local_*.json files."""
-    rows = []
-    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
-        for f in sorted(glob.glob(os.path.join(meta_dir, "local_*.json"))):
-            try:
-                with open(f, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-            except (OSError, json.JSONDecodeError):
-                continue
-            rows.append((f, data))
-    return rows
+    if inventory is None:
+        inventory = build_metadata_path_inventory(appdata_claude_dir)
+    require_complete_metadata_inventory(inventory)
+    return [(record.path, record.data) for record in inventory.records]
 
 
 def find_duplicate_groups(rows):
@@ -214,6 +211,13 @@ def main():
         args.state, APPDATA_CLAUDE_DIR,
         os.path.join(os.path.expanduser("~"), ".claude", "projects"),
     )
+    try:
+        metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+        require_complete_metadata_inventory(metadata_inventory)
+    except IncompleteMetadataInventoryError as exc:
+        print("REFUSED: Metadata inventory is partial; no duplicates were selected.")
+        print("Inventory errors: {}".format(exc))
+        sys.exit(3)
 
     # Compute current snapshot and diagnosis ID
     snapshot, current_id = current_snapshot_and_diagnosis_id(
@@ -252,7 +256,7 @@ def main():
         sys.exit(3)
 
     # Index state
-    all_rows = index_metadata(appdata_claude_dir)
+    all_rows = index_metadata(appdata_claude_dir, metadata_inventory)
     dup_groups = find_duplicate_groups(all_rows)
 
     used_diagnosis_id = args.diagnosis_id if not force_mode else "(forced-audit-only)"

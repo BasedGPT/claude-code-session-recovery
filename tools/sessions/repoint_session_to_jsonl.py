@@ -45,8 +45,6 @@ Usage:
     python tools/sessions/repoint_session_to_jsonl.py --diagnosis-id <hex> --summary
 """
 import argparse
-import glob
-import json
 import os
 import sys
 from datetime import datetime
@@ -55,12 +53,22 @@ _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
     from platform_support import desktop_process_check_command, desktop_process_running
-    from session_state import default_claude_paths, find_metadata_directories, slug_encode
+    from session_metadata import (
+        IncompleteMetadataInventoryError,
+        build_metadata_path_inventory,
+        require_complete_metadata_inventory,
+    )
+    from session_state import default_claude_paths, slug_encode
     from mutator_safety import (
         atomic_write_json, current_snapshot_and_diagnosis_id, diagnosis_mode,
         metadata_backup_path, resolve_state_paths, verified_backup,
     )
-    from transcript_files import build_transcript_index, first_cwd
+    from transcript_files import (
+        IncompleteTranscriptInventoryError,
+        build_transcript_path_inventory,
+        first_cwd,
+        require_complete_transcript_inventory,
+    )
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/repoint_session_to_jsonl.py")
@@ -96,35 +104,38 @@ KNOWN_DO_NOT_RUN = [
 # Discovery
 # ---------------------------------------------------------------------------
 
-def _find_mismatches(appdata_claude_dir, projects_dir):
+def _find_mismatches(appdata_claude_dir, projects_dir, metadata_inventory=None):
     """Return list of (meta_path, meta_dict, old_cwd, new_cwd, actual_slug_dir)."""
-    jsonl_index = build_transcript_index(projects_dir)
+    if metadata_inventory is None:
+        metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+    require_complete_metadata_inventory(metadata_inventory)
+    inventory = build_transcript_path_inventory(projects_dir)
+    require_complete_transcript_inventory(inventory)
+    jsonl_index = inventory.by_session_id
     results = []
 
-    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
-        for f in sorted(glob.glob(os.path.join(meta_dir, "local_*.json"))):
-            try:
-                with open(f, "r", encoding="utf-8") as fh:
-                    meta = json.load(fh)
-            except (OSError, json.JSONDecodeError):
-                continue
+    for record in metadata_inventory.records:
+        meta = record.data
+        cli = meta.get("cliSessionId")
+        cwd = meta.get("cwd", "")
+        if not cli or not cwd:
+            continue
+        if cli not in jsonl_index:
+            continue
 
-            cli = meta.get("cliSessionId")
-            cwd = meta.get("cwd", "")
-            if not cli or not cwd:
-                continue
-            if cli not in jsonl_index:
-                continue
+        expected_slug = slug_encode(cwd)
+        # Refuse to choose a path when one UUID exists under multiple
+        # slugs; the mutator must remain fail-closed.
+        if len(jsonl_index[cli]) != 1:
+            continue
+        jsonl_path = jsonl_index[cli][0]
+        actual_slug_dir = os.path.basename(os.path.dirname(jsonl_path))
 
-            expected_slug = slug_encode(cwd)
-            jsonl_path = jsonl_index[cli]
-            actual_slug_dir = os.path.basename(os.path.dirname(jsonl_path))
+        if actual_slug_dir == expected_slug:
+            continue
 
-            if actual_slug_dir == expected_slug:
-                continue
-
-            new_cwd = first_cwd(jsonl_path)
-            results.append((f, meta, cwd, new_cwd, actual_slug_dir))
+        new_cwd = first_cwd(jsonl_path)
+        results.append((record.path, meta, cwd, new_cwd, actual_slug_dir))
 
     return results
 
@@ -234,6 +245,13 @@ def main():
     appdata_claude_dir, projects_dir = resolve_state_paths(
         args.state, APPDATA_CLAUDE_DIR, PROJECTS_DIR,
     )
+    try:
+        metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+        require_complete_metadata_inventory(metadata_inventory)
+    except IncompleteMetadataInventoryError as exc:
+        print("REFUSED: Metadata inventory is partial; no metadata paths were selected.")
+        print("Inventory errors: {}".format(exc))
+        sys.exit(3)
 
     snapshot, current_id = current_snapshot_and_diagnosis_id(
         appdata_claude_dir, projects_dir, fixture_mode=(args.state is not None),
@@ -266,7 +284,14 @@ def main():
         print("Then re-run with --apply.")
         sys.exit(3)
 
-    mismatches = _find_mismatches(appdata_claude_dir, projects_dir)
+    try:
+        mismatches = _find_mismatches(
+            appdata_claude_dir, projects_dir, metadata_inventory
+        )
+    except IncompleteTranscriptInventoryError as exc:
+        print("REFUSED: Transcript inventory is partial; no metadata paths were selected.")
+        print("Inventory errors: {}".format(exc))
+        sys.exit(3)
 
     print("Sessions with cwd slug mismatch: {}".format(len(mismatches)))
     print("Mode: {}".format("APPLY (writing to AppData)" if args.apply else "dry-run"))

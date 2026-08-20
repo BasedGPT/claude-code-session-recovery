@@ -37,8 +37,6 @@ Usage:
     python tools/sessions/rewrite_metadata_cwd.py --old-cwd "C:\\old\\path" --new-cwd "C:\\new\\path" --apply
 """
 import argparse
-import glob
-import json
 import os
 import sys
 
@@ -49,7 +47,12 @@ if hasattr(sys.stdout, "reconfigure"):
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import default_claude_appdata_dir, find_metadata_directories
+    from session_metadata import (
+        IncompleteMetadataInventoryError,
+        build_metadata_path_inventory,
+        require_complete_metadata_inventory,
+    )
+    from session_state import default_claude_appdata_dir
     from mutator_safety import (
         current_snapshot_and_diagnosis_id,
         desktop_process_running as _desktop_running,
@@ -92,22 +95,20 @@ def _make_known_do_not_run(old_cwd):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _find_targets(appdata_claude_dir, old_lower):
+def _find_targets(appdata_claude_dir, old_lower, inventory=None):
     """Return [(path, parsed_dict)] for metadata files containing old path."""
+    if inventory is None:
+        inventory = build_metadata_path_inventory(appdata_claude_dir)
+    require_complete_metadata_inventory(inventory)
     targets = []
-    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
-        for f in sorted(glob.glob(os.path.join(meta_dir, "local_*.json"))):
-            try:
-                with open(f, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-            except (OSError, json.JSONDecodeError):
-                continue
-            needs_update = any(
-                old_lower in data.get(field, "").lower()
-                for field in CWD_FIELDS
-            )
-            if needs_update:
-                targets.append((f, data))
+    for record in inventory.records:
+        data = record.data
+        needs_update = any(
+            old_lower in data.get(field, "").lower()
+            for field in CWD_FIELDS
+        )
+        if needs_update:
+            targets.append((record.path, data))
     targets.sort(key=lambda x: x[1].get("lastActivityAt", 0), reverse=True)
     return targets
 
@@ -198,6 +199,13 @@ def main():
         args.state, APPDATA_CLAUDE_DIR,
         os.path.join(os.path.expanduser("~"), ".claude", "projects"),
     )
+    try:
+        metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+        require_complete_metadata_inventory(metadata_inventory)
+    except IncompleteMetadataInventoryError as exc:
+        print("REFUSED: Metadata inventory is partial; no cwd rewrites were selected.")
+        print("Inventory errors: {}".format(exc))
+        sys.exit(3)
 
     # Compute current snapshot and diagnosis ID
     snapshot, current_id = current_snapshot_and_diagnosis_id(
@@ -239,7 +247,7 @@ def main():
     new_cwd = args.new_cwd
     old_lower = old_cwd.lower()
 
-    targets = _find_targets(appdata_claude_dir, old_lower)
+    targets = _find_targets(appdata_claude_dir, old_lower, metadata_inventory)
     used_diagnosis_id = args.diagnosis_id if not force_mode else "(forced-audit-only)"
 
     print("Metadata files with old cwd: {}".format(len(targets)))

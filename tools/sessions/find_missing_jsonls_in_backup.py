@@ -45,7 +45,7 @@ try:
     from session_state import (
         build_snapshot, default_claude_paths, find_metadata_directories,
     )
-    from transcript_files import build_transcript_index
+    from transcript_files import build_transcript_path_inventory
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/find_missing_jsonls_in_backup.py")
@@ -64,7 +64,10 @@ BACKUP_ROOTS = [
 
 def _find_missing(appdata_claude_dir, projects_dir):
     """Return [(meta_file, cli_sid, title, created_at)] for sessions with no live JSONL."""
-    jsonl_index = build_transcript_index(projects_dir)
+    inventory = build_transcript_path_inventory(projects_dir)
+    if not inventory.is_complete:
+        return None, inventory
+    jsonl_index = inventory.by_session_id
     out = []
     for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         for fname in sorted(os.listdir(meta_dir)):
@@ -80,7 +83,7 @@ def _find_missing(appdata_claude_dir, projects_dir):
             if not cli or cli in jsonl_index:
                 continue
             out.append((fname, cli, (d.get("title") or "")[:60], int(d.get("createdAt") or 0)))
-    return out
+    return out, inventory
 
 
 # Subdirectory names to skip during recursive default-location search.
@@ -194,7 +197,16 @@ def main():
               "unsupported state to the maintainer.", file=sys.stderr)
         return 2
 
-    targets = _find_missing(appdata_claude_dir, projects_dir)
+    targets, inventory = _find_missing(appdata_claude_dir, projects_dir)
+    if not inventory.is_complete:
+        print(
+            "PARTIAL: transcript inventory is incomplete; "
+            "missing-JSONL conclusions were suppressed."
+        )
+        print("Inventory errors: {}".format(
+            ", ".join(error.code for error in inventory.errors)
+        ))
+        return 0
     print("Sessions with cliSessionId but no live JSONL: {}".format(len(targets)))
     print()
 

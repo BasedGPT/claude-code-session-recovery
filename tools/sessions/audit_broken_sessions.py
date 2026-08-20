@@ -51,7 +51,7 @@ try:
         find_metadata_directories,
         slug_encode,
     )
-    from transcript_files import build_transcript_index
+    from transcript_files import build_transcript_path_inventory
 except ImportError as exc:
     print("ERROR: cannot import from diagnose.py: {}".format(exc))
     print("Run from the repo root: python tools/sessions/audit_broken_sessions.py")
@@ -81,8 +81,13 @@ def _classify(meta, jsonl_index):
     if cli not in jsonl_index:
         return "cli_but_no_jsonl", info
 
+    candidates = jsonl_index[cli]
+    if len(candidates) > 1:
+        info["candidate_count"] = len(candidates)
+        return "cli_session_id_ambiguous", info
+
     expected_slug = slug_encode(info["cwd"])
-    actual_slug = os.path.basename(os.path.dirname(jsonl_index[cli]))
+    actual_slug = os.path.basename(os.path.dirname(candidates[0]))
     info["expected_slug"] = expected_slug
 
     if actual_slug == expected_slug:
@@ -92,18 +97,21 @@ def _classify(meta, jsonl_index):
     return "cli_at_unexpected_slug", info
 
 
-def _audit(appdata_claude_dir, projects_dir):
+def _audit(appdata_claude_dir, projects_dir, inventory=None):
     """Walk metadata dir, return {bucket: [(filename, info), ...]}."""
     results = {
         "parse_error":            [],
         "archived_no_cli":        [],
         "archived":               [],
         "no_cli_session_id":      [],
+        "cli_session_id_ambiguous": [],
         "cli_at_unexpected_slug": [],
         "cli_but_no_jsonl":       [],
         "healthy":                [],
     }
-    jsonl_index = build_transcript_index(projects_dir)
+    if inventory is None:
+        inventory = build_transcript_path_inventory(projects_dir)
+    jsonl_index = inventory.by_session_id
 
     for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
         for fname in sorted(os.listdir(meta_dir)):
@@ -141,6 +149,8 @@ def _print_report(results, quiet, limit):
          "archived_no_cli -- isArchived AND cliSessionId absent (would blank-pane if unarchived)"),
         ("no_cli_session_id",
          "no_cli_session_id -- cliSessionId absent (Desktop cannot resume)"),
+        ("cli_session_id_ambiguous",
+         "cli_session_id_ambiguous -- cliSessionId resolves to multiple physical JSONLs"),
         ("cli_at_unexpected_slug",
          "cli_at_unexpected_slug -- JSONL at a different slug than cwd encodes to"),
         ("cli_but_no_jsonl",
@@ -191,7 +201,17 @@ def main():
               "unsupported state to the maintainer.", file=sys.stderr)
         return 2
 
-    results = _audit(appdata_claude_dir, projects_dir)
+    inventory = build_transcript_path_inventory(projects_dir)
+    if not inventory.is_complete:
+        print(
+            "PARTIAL: transcript inventory is incomplete; "
+            "relationship classifications were suppressed."
+        )
+        print("Inventory errors: {}".format(
+            ", ".join(error.code for error in inventory.errors)
+        ))
+        return 0
+    results = _audit(appdata_claude_dir, projects_dir, inventory)
     _print_report(results, args.quiet, args.limit)
     return 0
 

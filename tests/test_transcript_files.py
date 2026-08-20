@@ -21,7 +21,9 @@ def _write_transcript(tmp_path, content):
 def test_object_iterator_skips_malformed_and_non_object_records(tmp_path):
     path = _write_transcript(
         tmp_path,
-        "not-json\n[\"not-an-object\"]\n{\"type\": \"assistant\"}\n",
+        "not-json\n"
+        + '{"oversized": ' + ("1" * 5000) + "}\n"
+        + "[\"not-an-object\"]\n{\"type\": \"assistant\"}\n",
     )
 
     assert list(transcript_files.iter_transcript_records(path)) == [{"type": "assistant"}]

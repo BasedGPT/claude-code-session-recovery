@@ -91,6 +91,22 @@ scan suppresses all inferred session, relationship, and classification output.
 
 ## Known patterns
 
+### Read-only transcript audits
+
+The bounded integrity and identity audits inspect JSONL structure and physical
+path identity without exposing transcript content or mutating state. They are
+useful for investigating malformed records, graph topology, duplicate session
+IDs, slug collisions, and metadata ambiguity:
+
+```text
+python tools/sessions/audit_transcript_integrity.py --json
+python tools/sessions/audit_transcript_identity.py --json
+```
+
+See [`docs/transcript-audits.md`](docs/transcript-audits.md) for the privacy,
+limit, and explicit mutation-hold contracts. These audits do not decide the
+active resume leaf or authorize transcript cleanup.
+
 ### `transcriptUnavailable: true` — startup scanner regression (cross-platform)
 
 The Desktop startup scanner can remove `cliSessionId` from metadata files and set `transcriptUnavailable: true`, even when the transcript file is intact on disk. Sessions affected by this show in the sidebar with title and folder intact but open with no conversation history.

@@ -426,7 +426,7 @@ def load_groupings(store_path=None):
     val_str = _decode_ls_value(raw_val)
     try:
         obj = json.loads(val_str)
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:
         raise ValueError(
             "Could not parse dframe-store as JSON: {}".format(exc)
         ) from exc

@@ -49,7 +49,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import subprocess
@@ -64,7 +63,12 @@ if hasattr(sys.stderr, "reconfigure"):
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _TOOLS_DIR)
 try:
-    from session_state import default_claude_appdata_dir, find_metadata_directories
+    from session_metadata import (
+        IncompleteMetadataInventoryError,
+        build_metadata_path_inventory,
+        require_complete_metadata_inventory,
+    )
+    from session_state import default_claude_appdata_dir
     from mutator_safety import (
         current_snapshot_and_diagnosis_id, diagnosis_mode, resolve_state_paths,
     )
@@ -188,33 +192,30 @@ def _sha_exists(sha):
         return False
 
 
-def _gather_broken_sessions(appdata_claude_dir):
+def _gather_broken_sessions(appdata_claude_dir, inventory=None):
     """Return one dict per metadata entry whose cwd contains 'worktrees' and
     does not exist on disk."""
+    if inventory is None:
+        inventory = build_metadata_path_inventory(appdata_claude_dir)
+    require_complete_metadata_inventory(inventory)
     rows = []
-    for _acct, _org, meta_dir in find_metadata_directories(appdata_claude_dir):
-        import glob as _glob
-        for p in sorted(_glob.glob(os.path.join(meta_dir, "local_*.json"))):
-            try:
-                with open(p, encoding="utf-8") as f:
-                    data = json.load(f)
-            except (OSError, ValueError):
-                continue
-            cwd = data.get("cwd", "") or ""
-            if "worktrees" not in cwd.lower():
-                continue
-            if os.path.isdir(cwd):
-                continue
-            branch = data.get("branch", "") or ""
-            name = branch.replace("claude/", "") if branch.startswith("claude/") else ""
-            rows.append({
-                "meta_file": os.path.basename(p),
-                "cwd": cwd,
-                "branch": branch,
-                "name": name,
-                "title": (data.get("title", "") or "")[:60],
-                "last": data.get("lastActivityAt", 0) or 0,
-            })
+    for record in inventory.records:
+        data = record.data
+        cwd = data.get("cwd", "") or ""
+        if "worktrees" not in cwd.lower():
+            continue
+        if os.path.isdir(cwd):
+            continue
+        branch = data.get("branch", "") or ""
+        name = branch.replace("claude/", "") if branch.startswith("claude/") else ""
+        rows.append({
+            "meta_file": os.path.basename(record.path),
+            "cwd": cwd,
+            "branch": branch,
+            "name": name,
+            "title": (data.get("title", "") or "")[:60],
+            "last": data.get("lastActivityAt", 0) or 0,
+        })
     return rows
 
 
@@ -299,6 +300,13 @@ def main():
         args.state, APPDATA_CLAUDE_DIR,
         os.path.join(os.path.expanduser("~"), ".claude", "projects"),
     )
+    try:
+        metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+        require_complete_metadata_inventory(metadata_inventory)
+    except IncompleteMetadataInventoryError as exc:
+        print("REFUSED: Metadata inventory is partial; no recovery actions were selected.")
+        print("Inventory errors: {}".format(exc))
+        sys.exit(3)
 
     # Compute current snapshot and diagnosis ID
     snapshot, current_id = current_snapshot_and_diagnosis_id(
@@ -379,7 +387,7 @@ def main():
 
     # ----- Phase 2: worktree registration -----
     print("--- Phase 2: worktree stub registration ---")
-    sessions = _gather_broken_sessions(appdata_claude_dir)
+    sessions = _gather_broken_sessions(appdata_claude_dir, metadata_inventory)
     print("Broken sessions referencing missing worktree cwds: {}.".format(len(sessions)))
 
     by_cwd: dict = {}

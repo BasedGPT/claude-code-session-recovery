@@ -76,6 +76,10 @@ MAX_GUARD_ENTRIES = 200_000
 MAX_GUARD_DEPTH = 256
 MAX_JSON_INTEGER_DIGITS = 4096
 MAX_JSON_DEPTH = 256
+PUBLIC_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
 
 
 class RestoreRefusal(RuntimeError):
@@ -110,22 +114,31 @@ def _is_symlink(info: zipfile.ZipInfo) -> bool:
     return ((info.external_attr >> 16) & 0o170000) == 0o120000
 
 
-def _sha256_file(path: str) -> tuple[int, str]:
+def _sha256_file(path: str, *, max_bytes: int | None = None) -> tuple[int, str]:
+    if max_bytes is not None and max_bytes < 0:
+        raise ValueError("max_bytes must be non-negative")
     if os.name == "nt":
-        return _windows_sha256_file(path)
+        return _windows_sha256_file(path, max_bytes=max_bytes)
     digest = hashlib.sha256()
     total = 0
     with open(path, "rb") as source:
         while True:
-            chunk = source.read(HASH_CHUNK_SIZE)
+            read_size = HASH_CHUNK_SIZE
+            if max_bytes is not None:
+                read_size = min(read_size, max_bytes - total + 1)
+            chunk = source.read(read_size)
             if not chunk:
                 break
-            digest.update(chunk)
             total += len(chunk)
+            if max_bytes is not None and total > max_bytes:
+                raise RestoreRefusal("file hash exceeds bounded byte limit")
+            digest.update(chunk)
     return total, digest.hexdigest()
 
 
-def _windows_sha256_file(path: str) -> tuple[int, str]:
+def _windows_sha256_file(
+    path: str, *, max_bytes: int | None = None
+) -> tuple[int, str]:
     """Hash through an explicit read handle compatible with retained leases."""
     import ctypes
     from ctypes import wintypes
@@ -163,14 +176,19 @@ def _windows_sha256_file(path: str) -> tuple[int, str]:
         read_file.restype = wintypes.BOOL
         while True:
             count = wintypes.DWORD()
+            read_size = len(buffer)
+            if max_bytes is not None:
+                read_size = min(read_size, max_bytes - total + 1)
             if not read_file(
-                handle, buffer, len(buffer), ctypes.byref(count), None
+                handle, buffer, read_size, ctypes.byref(count), None
             ):
                 raise OSError(ctypes.get_last_error(), "cannot hash retained file")
             if count.value == 0:
                 break
-            digest.update(buffer.raw[:count.value])
             total += count.value
+            if max_bytes is not None and total > max_bytes:
+                raise RestoreRefusal("file hash exceeds bounded byte limit")
+            digest.update(buffer.raw[:count.value])
         return total, digest.hexdigest()
     finally:
         kernel32.CloseHandle(handle)
@@ -1581,7 +1599,9 @@ def _redact_plan_identities(value: str, plan: RestorePlan) -> str:
                 re.escape(segment), entry.pair_label, redacted,
                 flags=re.IGNORECASE,
             )
-    return redacted
+    # Empty manifest pairs have no RestoreEntry, so scrub every UUID-shaped
+    # token as a final privacy boundary even when no pair mapping exists.
+    return PUBLIC_UUID_RE.sub("redacted-uuid", redacted)
 
 
 def _print_plan(
@@ -1635,7 +1655,7 @@ def _guard_file_record(path: str, relative: str, budget: dict) -> tuple:
     budget["bytes"] += before.st_size
     if budget["files"] > MAX_GUARD_FILES or budget["bytes"] > MAX_GUARD_BYTES:
         raise RestoreRefusal("live-state transaction guard exceeds bounded limits")
-    size, digest = _sha256_file(path)
+    size, digest = _sha256_file(path, max_bytes=before.st_size)
     after = os.stat(path, follow_symlinks=False)
     if _stat_signature(before) != _stat_signature(after) or size != after.st_size:
         raise RestoreRefusal("live state changed while its transaction guard was built")

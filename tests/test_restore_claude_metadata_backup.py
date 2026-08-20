@@ -1049,6 +1049,33 @@ def test_live_state_guard_refuses_before_materializing_over_cap_directory(
         )
 
 
+def test_bounded_hash_refuses_bytes_beyond_the_live_guard_snapshot(tmp_path):
+    target = tmp_path / "growing.jsonl"
+    target.write_bytes(b"ab")
+
+    with pytest.raises(restore.RestoreRefusal, match="bounded byte limit"):
+        restore._sha256_file(str(target), max_bytes=1)
+
+
+def test_empty_pair_uuid_in_archive_name_is_redacted_without_entries(
+    tmp_path, capsys
+):
+    empty_pair_uuid = "33333333-3333-3333-3333-333333333333"
+    plan = restore.RestorePlan("v2", 1, (), (), (), ())
+
+    restore._print_plan(
+        str(tmp_path / (empty_pair_uuid + ".zip")),
+        str(tmp_path / "sessions"),
+        plan,
+        include_paths=False,
+        apply=False,
+    )
+
+    rendered = capsys.readouterr().out
+    assert empty_pair_uuid not in rendered
+    assert "redacted-uuid.zip" in rendered
+
+
 @pytest.mark.skipif(os.name == "nt", reason="non-Windows portability contract")
 def test_non_windows_created_directories_are_left_on_rollback(
     tmp_path, monkeypatch, capsys

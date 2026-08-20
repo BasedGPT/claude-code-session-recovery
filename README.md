@@ -215,6 +215,70 @@ python tools/sessions/backup_claude_state.py --dry-run   # see what would be zip
 
 Running while Desktop is open is fine — all source operations are read-only.
 
+### Restore Desktop metadata: `tools/sessions/restore_claude_metadata_backup.py`
+
+Restore only a `desktop-metadata/*.zip` archive with the dedicated companion;
+do not extract it over the live data directory by hand. Get a fresh diagnosis
+ID, review the dry-run, fully quit Claude Desktop, and then apply the same plan:
+
+```
+python tools/diagnose.py
+python tools/sessions/restore_claude_metadata_backup.py PATH_TO_ZIP --diagnosis-id <id>
+python tools/sessions/restore_claude_metadata_backup.py PATH_TO_ZIP --diagnosis-id <id> --apply
+```
+
+Layout-version 2 archives are restored to the exact account/organisation paths
+declared by their verified manifest. Older flat, manifest-less metadata zips
+are accepted only when both destinations are explicit:
+
+```
+python tools/sessions/restore_claude_metadata_backup.py OLD_ZIP \
+  --target-account-uuid <uuid> --target-organisation-uuid <uuid> \
+  --diagnosis-id <id>
+```
+
+The tool validates CRCs, schema, entry sets, byte counts, SHA-256 hashes, safe
+paths, and bounded archive size before planning. Pair directory names must be
+canonical lowercase UUID-like identifiers. Every archive payload must be a
+safe, flat `local_*.json` metadata filename containing a bounded UTF-8 JSON
+object. Duplicate keys, non-finite numbers (including exponent overflow),
+overlong integers, excessive nesting, nested paths, binary files, invalid JSON,
+and Windows reserved names are refused without a traceback. CLI cap arguments
+can lower, but never raise, the built-in file,
+uncompressed-byte, and manifest-byte ceilings.
+
+Existing byte-identical files are skipped. One differing target refuses the
+entire restore; there is no overwrite option. Apply creates all required empty
+parents and hash-verifies same-directory staged files before its final fresh
+diagnosis/Desktop/target gate. Apply holds the exact bounded archive source and
+rechecks its identity, stat, and SHA-256 throughout publication. Destination
+directories are pinned with verified non-reparse handles on Windows, or
+no-follow directory descriptors on POSIX; apply refuses if the platform cannot
+provide that invariant. It publishes each absent target with an atomic hard-link
+create that cannot replace an existing path. Immediately before and after every
+create—and once more after the final create—it rechecks every directory anchor,
+the archive, the full target set, Desktop state, and a freshly normalized
+diagnosis. The normalization discounts only verified staging files, links, and
+empty directories created by this invocation. A content/layout fingerprint
+keeps every unrelated metadata file, account/organisation directory, and JSONL
+transcript visible, so any external add, removal, or modification refuses the
+transaction.
+On Windows, every created target is immediately bound to a retained
+`DELETE | FILE_READ_ATTRIBUTES` handle that denies delete sharing. Rollback
+re-proves the staged identity/hash and deletes only that bound object with
+`SetFileInformationByHandle`; it never unlinks a re-resolved target name.
+Deletion-capable no-share-delete handles are likewise acquired immediately for
+every invocation-created directory, and empty rollback cleanup is performed
+through those handles before they close. A successful restore closes target
+leases without deletion. On POSIX and other platforms, where Python exposes no proven
+inode-bound conditional unlink/rmdir primitive, failed publication deliberately
+leaves created targets and directories and reports `rollback incomplete` rather
+than risking deletion of a name-swapped replacement. Verified staging links are
+still cleaned through live destination anchors. Output uses opaque pair labels
+unless `--include-paths` is explicitly requested. Exit statuses are `0` for a
+completed dry-run/apply, `2` for CLI usage, `3` for a safety refusal, and `4`
+for staging/publication failure.
+
 **Before restoring from a backup zip:** set `"cleanupPeriodDays": 36500` in `~/.claude/settings.json` first. The backup preserves original file timestamps, and Claude Code's cleanup deletes JSONLs by filesystem mtime — not by message date. Any JSONL older than 30 days by mtime will be re-deleted on next launch if you restore without this step. See [docs/session-recovery.md](docs/session-recovery.md#cli-points-missing-jsonl) for the full restore sequence.
 
 ---

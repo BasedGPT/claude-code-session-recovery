@@ -56,17 +56,24 @@ class MetadataPathInventory:
         return self.status == "complete"
 
 
-def build_metadata_path_inventory(appdata_claude_dir):
+def build_metadata_path_inventory(appdata_claude_dir, *, excluded_paths=None):
     """Discover and parse all direct account/org ``local_*.json`` files.
 
     A missing ``claude-code-sessions`` root is a known complete-empty state.
     Existing but inaccessible account, organisation, or file boundaries make
-    the result partial so mutation selectors can fail closed.
+    the result partial so mutation selectors can fail closed.  A caller may
+    exclude invocation-owned paths from a transaction-normalized snapshot;
+    excluded names are ignored before stat/open so a retained object lease
+    cannot make that normalized inventory spuriously partial.
     """
     records = []
     directories = []
     error_codes = []
     physical_file_count = 0
+    excluded = {
+        os.path.normcase(os.path.abspath(path))
+        for path in (excluded_paths or ())
+    }
     if not appdata_claude_dir:
         return MetadataPathInventory((), (), 0, "complete", ())
 
@@ -124,6 +131,9 @@ def build_metadata_path_inventory(appdata_claude_dir):
                     and entry.name.endswith(".json")
                 ):
                     continue
+                path = os.path.abspath(entry.path)
+                if os.path.normcase(path) in excluded:
+                    continue
                 try:
                     is_file = entry.is_file()
                 except OSError:
@@ -133,7 +143,6 @@ def build_metadata_path_inventory(appdata_claude_dir):
                     error_codes.append("metadata_file_not_regular_file")
                     continue
                 physical_file_count += 1
-                path = os.path.abspath(entry.path)
                 try:
                     with open(path, "r", encoding="utf-8") as handle:
                         data = json.load(handle)

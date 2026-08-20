@@ -99,6 +99,30 @@ def test_replacing_the_sole_pair_invalidates_the_diagnosis_token(tmp_path):
     assert before_id != after_id
 
 
+def test_transaction_exclusions_preserve_the_prepublication_diagnosis(tmp_path):
+    _write_state(tmp_path)
+    appdata = tmp_path / "appdata" / "Claude"
+    projects = tmp_path / "projects"
+    sessions_root = appdata / "claude-code-sessions"
+
+    before = session_state.build_snapshot(
+        str(appdata), str(projects), fixture_mode=True
+    )
+    restored = sessions_root / "account-b" / "organisation-b" / "local_new.json"
+    restored.parent.mkdir(parents=True)
+    restored.write_text('{"sessionId":"new"}', encoding="utf-8")
+
+    normalized = session_state.build_snapshot(
+        str(appdata),
+        str(projects),
+        fixture_mode=True,
+        excluded_metadata_paths={str(restored)},
+        excluded_metadata_pairs={("account-b", "organisation-b")},
+    )
+
+    assert session_state.make_diagnosis_id(normalized) == session_state.make_diagnosis_id(before)
+
+
 def test_metadata_directories_are_sorted_and_ignore_non_directories(tmp_path):
     _write_state(tmp_path)
     sessions_root = tmp_path / "appdata" / "Claude" / "claude-code-sessions"

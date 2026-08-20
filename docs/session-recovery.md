@@ -276,6 +276,30 @@ Desktop pairs : 2
   pair-02 local_*.json=0
 ```
 
-**Recovery.** No automatic repair is provided by this toolkit. Confirm which pair Desktop currently reads and preserve every populated pair before deciding on any manual recovery. The metadata-synthesis mutator refuses to choose a destination while more than one pair exists. `diagnose.py` still reports any orphan-transcript finding in that state, but suppresses its synthesis command until the destination ambiguity is resolved.
+**Recovery.** The toolkit does not infer an authoritative live pair or move
+metadata between pairs. Confirm which pair Desktop currently reads and preserve
+every populated pair before deciding on any manual recovery. If the missing
+metadata is in a `backup_claude_state.py` Desktop archive,
+`restore_claude_metadata_backup.py` can verify the archive and restore each
+file to the exact account/organisation path recorded by its manifest. It does
+not merge or reinterpret pairs. Legacy flat archives require explicit account
+and organisation UUID arguments. Always review its default dry-run first and
+fully quit Desktop before `--apply`. Apply pins every destination directory,
+holds and hashes the exact archive source, and repeats its target, Desktop,
+archive, and normalized live-state guards around every atomic create. Only its
+own verified staging files, created links, and empty setup directories are
+discounted; unrelated transcript, metadata, or account-state drift aborts and
+rolls back safely created links. Windows rollback retains no-share-delete file
+and directory handles and uses object-bound deletion, so a replacement inserted
+at the same name is never pathname-deleted. POSIX and other platforms retain
+created targets/directories and report `rollback incomplete` when publication
+fails because no portable inode-bound conditional unlink/rmdir is available;
+this is an intentional safety-over-cleanup tradeoff. Strict JSON validation
+rejects duplicate keys, non-finite values, oversized integers, and excessive
+nesting. The
+metadata-synthesis mutator refuses to
+choose a destination while more than one pair exists. `diagnose.py` still
+reports any orphan-transcript finding in that state, but suppresses its
+synthesis command until the destination ambiguity is resolved.
 
 **Safety.** `diagnose.py` only enumerates directories and reads metadata. It does not move, copy, rename, delete, or rewrite user data.

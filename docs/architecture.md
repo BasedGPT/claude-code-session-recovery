@@ -32,11 +32,12 @@ The code keeps command-line policy separate from reusable implementation:
 
 | Module | Interface and responsibility |
 |---|---|
-| `tools/session_state.py` | Read-only metadata discovery, structural snapshot construction, troubleshooting matching, and diagnosis-token generation |
+| `tools/session_state.py` | Read-only metadata discovery, structural snapshot construction (with narrow invocation-owned exclusions for transaction checks), troubleshooting matching, and diagnosis-token generation |
 | `tools/transcript_files.py` | Transcript discovery and caller-selectable JSONL interpretation |
 | `tools/transcript_audit.py` | Bounded, read-only transcript byte/JSON/graph facts shared by audit commands |
 | `tools/mutator_safety.py` | Policy-free mutation mechanics: invocation checks, fixture/live path resolution, fresh diagnosis, verified backup publication, and file writes |
 | `tools/session_metadata.py` | Complete/partial discovery of account/org `local_*.json` metadata; mutation selectors refuse opaque discovery errors before inference |
+| `tools/sessions/restore_claude_metadata_backup.py` | Strict finite bounded Desktop-metadata archive/JSON validation, collision-free planning, held archive and non-reparse directory anchors, per-create normalized diagnosis/content guards, atomic create-no-replace publication, Windows handle-bound target/directory rollback, and safe-incomplete non-Windows retention |
 | `tools/worktrees/worktree_lifecycle.py` | Worktree marker claims, sentinel content, and quiet-stub implementation |
 | `tests/fixture_scenarios.py` | Isolated scenario execution shared by fixture verification and golden regeneration |
 

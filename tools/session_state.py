@@ -228,17 +228,36 @@ def _detect_running_inside_desktop():
     return False
 
 
-def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
+def build_snapshot(
+    appdata_claude_dir,
+    projects_dir,
+    fixture_mode=False,
+    *,
+    excluded_metadata_paths=None,
+    excluded_metadata_pairs=None,
+):
     """Probe state and return the deterministic diagnosis snapshot."""
-    metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
+    excluded_paths = {
+        os.path.normcase(os.path.abspath(path))
+        for path in (excluded_metadata_paths or ())
+    }
+    excluded_pairs = set(excluded_metadata_pairs or ())
+    metadata_inventory = build_metadata_path_inventory(
+        appdata_claude_dir,
+        excluded_paths=excluded_paths,
+    )
+    metadata_records = [
+        record for record in metadata_inventory.records
+        if os.path.normcase(os.path.abspath(record.path)) not in excluded_paths
+    ]
     metadata_files = [
-        (record.path, record.data) for record in metadata_inventory.records
+        (record.path, record.data) for record in metadata_records
     ]
     desktop_session_pairs = []
     if metadata_inventory.is_complete:
         metadata_counts = collections.Counter(
             (record.account_uuid, record.organisation_uuid)
-            for record in metadata_inventory.records
+            for record in metadata_records
         )
         desktop_session_pairs = [
             {
@@ -250,6 +269,10 @@ def build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=False):
             }
             for account_uuid, organisation_uuid, _path
             in metadata_inventory.directories
+            if not (
+                (account_uuid, organisation_uuid) in excluded_pairs
+                and metadata_counts[(account_uuid, organisation_uuid)] == 0
+            )
         ]
 
     transcript_inventory = build_transcript_path_inventory(projects_dir)

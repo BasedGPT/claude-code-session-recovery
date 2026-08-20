@@ -1,3 +1,6 @@
 # Force LF on JSONL files — byte-count assertions in fixture tests depend on stable sizes.
 # Without this, core.autocrlf=true on Windows CI inflates sizes by 1 byte per line.
 *.jsonl text eol=lf
+
+# Fixture 18 is a byte-exact archive source: its manifest pins payload size/hash.
+fixtures/18-v2-metadata-restore-absent-target/state/metadata-backup-v2/** -text

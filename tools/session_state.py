@@ -61,6 +61,13 @@ def classify_cwd(cwd):
     """Classify a cwd path as junction, canonical, bare_root, or other."""
     if not cwd:
         return "other"
+    parts = cwd.replace("\\", "/").rstrip("/").split("/")
+    clean_parts = [part for part in parts if part and part != ":"]
+    # Bare-root metadata is a lexical recovery signal.  Classify it before
+    # consulting the host filesystem so Windows fixtures remain meaningful on
+    # macOS and stale roots remain diagnosable after they disappear.
+    if len(clean_parts) <= 2:
+        return "bare_root"
     try:
         real = os.path.realpath(cwd)
     except OSError:
@@ -69,10 +76,6 @@ def classify_cwd(cwd):
         return "other"
     if os.path.normcase(real) != os.path.normcase(cwd):
         return "junction"
-    parts = cwd.replace("\\", "/").rstrip("/").split("/")
-    clean_parts = [part for part in parts if part and part != ":"]
-    if len(clean_parts) <= 2:
-        return "bare_root"
     return "canonical"
 
 

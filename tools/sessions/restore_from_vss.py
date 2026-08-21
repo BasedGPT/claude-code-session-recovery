@@ -471,8 +471,12 @@ def _fx_find_in_shadows(cli_session_id, cwd_slug, shadow_dirs):
             shadow_name = os.path.basename(shadow_dir)
             return {
                 "shadow_path": candidate,
-                "source_rel": os.path.join("vss", shadow_name, "projects", cwd_slug, target),
-                "dest_rel": os.path.join("projects", cwd_slug, target),
+                # Fixture output is a cross-platform contract, not a native
+                # filesystem path.  Keep its display form stable on every OS.
+                "source_rel": "/".join(
+                    ("vss", shadow_name, "projects", cwd_slug, target)
+                ),
+                "dest_rel": "/".join(("projects", cwd_slug, target)),
                 "records": _fx_count_records(candidate),
                 "size": os.path.getsize(candidate),
             }

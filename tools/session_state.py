@@ -17,7 +17,7 @@ from transcript_files import (
     build_transcript_path_inventory,
     count_assistant_records,
 )
-from session_metadata import build_metadata_path_inventory
+from session_metadata import build_metadata_path_inventory, referenced_transcript_id
 from platform_support import (
     default_claude_appdata_dir,
     default_claude_paths,
@@ -326,7 +326,9 @@ def build_snapshot(
 
     all_transcript_ids = set(transcript_paths)
     referenced_ids = {
-        data.get("cliSessionId") for _path, data in metadata_files if data.get("cliSessionId")
+        transcript_id
+        for _path, data in metadata_files
+        if (transcript_id := referenced_transcript_id(data))
     }
     orphan_count = (
         len(all_transcript_ids - referenced_ids) if cross_store_complete else 0

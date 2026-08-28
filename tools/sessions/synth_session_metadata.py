@@ -46,6 +46,7 @@ try:
     from session_metadata import (
         IncompleteMetadataInventoryError,
         build_metadata_path_inventory,
+        referenced_transcript_id,
         require_complete_metadata_inventory,
     )
     from session_state import default_claude_paths
@@ -192,9 +193,9 @@ def _find_orphan_jsonls(appdata_claude_dir, projects_dir, metadata_inventory=Non
         metadata_inventory = build_metadata_path_inventory(appdata_claude_dir)
     require_complete_metadata_inventory(metadata_inventory)
     meta_cli_ids = {
-        record.data.get("cliSessionId")
+        transcript_id
         for record in metadata_inventory.records
-        if record.data.get("cliSessionId")
+        if (transcript_id := referenced_transcript_id(record.data))
     }
 
     inventory = build_transcript_path_inventory(projects_dir)

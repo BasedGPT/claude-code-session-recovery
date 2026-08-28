@@ -58,6 +58,32 @@ def test_snapshot_preserves_metadata_transcript_link_counts(tmp_path):
     assert session_state.make_diagnosis_id(snapshot) == session_state.make_diagnosis_id(snapshot)
 
 
+def test_null_cli_session_id_uses_embedded_session_uuid_for_orphan_count(tmp_path):
+    _write_state(tmp_path)
+    metadata_path = (
+        tmp_path
+        / "appdata"
+        / "Claude"
+        / "claude-code-sessions"
+        / "account-a"
+        / "organisation-a"
+        / "local_one.json"
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["sessionId"] = "local_{}".format(SESSION_ID)
+    metadata["cliSessionId"] = None
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    snapshot = session_state.build_snapshot(
+        str(tmp_path / "appdata" / "Claude"),
+        str(tmp_path / "projects"),
+        fixture_mode=True,
+    )
+
+    assert snapshot["metadata_missing_cli_count"] == 1
+    assert snapshot["jsonl_orphan_count"] == 0
+
+
 def test_inventory_status_is_opt_in_and_does_not_change_diagnosis_token(tmp_path):
     _write_state(tmp_path)
     appdata = tmp_path / "appdata" / "Claude"

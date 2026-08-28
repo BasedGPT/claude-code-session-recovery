@@ -9,6 +9,7 @@ It never prints paths or metadata content.
 from dataclasses import dataclass
 import json
 import os
+import re
 
 from metadata_archive import MAX_METADATA_FILE_BYTES
 
@@ -23,6 +24,32 @@ MAX_METADATA_FILES = 250_000
 MAX_METADATA_TOTAL_RETAINED_BYTES = 128 * 1024 * 1024
 MAX_METADATA_RECORDS = 100_000
 MAX_METADATA_JSON_DEPTH = 64
+
+
+_EMBEDDED_UUID_RE = re.compile(
+    r"(?<![0-9a-fA-F])"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    r"(?![0-9a-fA-F])"
+)
+
+
+def referenced_transcript_id(data):
+    """Return the transcript ID referenced by one Desktop metadata record."""
+    cli_session_id = data.get("cliSessionId")
+    if cli_session_id:
+        return cli_session_id
+    if (
+        "cliSessionId" not in data
+        or data["cliSessionId"] is not None
+        or data.get("isArchived")
+    ):
+        return None
+    session_id = data.get("sessionId")
+    if not isinstance(session_id, str):
+        return None
+    match = _EMBEDDED_UUID_RE.search(session_id)
+    return match.group(1) if match else None
 
 
 class IncompleteMetadataInventoryError(RuntimeError):

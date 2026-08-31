@@ -1,0 +1,96 @@
+name: Version and release policy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version-policy:
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify version transition
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+            head="$PR_HEAD_SHA"
+          elif [[ -n "$PUSH_BASE_SHA" && "$PUSH_BASE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            base="$PUSH_BASE_SHA"
+            head="$PUSH_HEAD_SHA"
+          else
+            base="$(git rev-parse "$PUSH_HEAD_SHA^")"
+            head="$PUSH_HEAD_SHA"
+          fi
+          python tools/release.py check --base "$base" --head "$head"
+
+  tagged-release:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify tag and run release checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/release.py tag-check --tag "$GITHUB_REF_NAME" --ref "$GITHUB_SHA"
+          python -m pip install -r requirements-dev.txt
+          python -m pytest -q tests
+          python tests/run_fixture_tests.py
+
+      - name: Build release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/release.py manifest \
+            --ref "$GITHUB_REF_NAME" \
+            --output "release-manifest-$GITHUB_REF_NAME.json"
+
+      - name: Publish GitHub release and manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          manifest="release-manifest-$tag.json"
+          notes="docs/releases/$tag.md"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$manifest" --clobber
+          else
+            gh release create "$tag" "$manifest" \
+              --verify-tag \
+              --title "$tag" \
+              --notes-file "$notes"
+          fi

@@ -90,9 +90,17 @@ the resolved paths and retains the repair policy.
 
 ## 6. Git workflow conventions
 
-- Releases are tagged (`v1.0.0`, `v1.0.1`, ...).
-- Each release tag carries SHA256 hashes of all tool files in the release notes.
-- `main` is the stable branch. No force-push to `main`.
+- Every change to the public tree is a versioned release. `VERSION` is the
+  authority; each change also adds `docs/releases/vX.Y.Z.md` and advances
+  numeric SemVer.
+- Run `python tools/release.py check --base <base-sha> --head <head-sha>` before
+  merging. The check requires the prior version's annotated tag.
+- Releases are immutable annotated tags (`v1.0.0`, `v1.0.1`, ...). The tag
+  workflow re-runs tests and publishes a deterministic release manifest with
+  SHA256 hashes of `VERSION`, the release note, and every tracked tool file.
+- `main` is the stable branch. Pull requests and required CI checks are
+  mandatory; force-pushes to `main` and updates/deletions of `v*` tags are not
+  permitted.
 - New mutators require a matching fixture and must pass the five mutator gates (see `docs/architecture.md`), including the dry-run exit and unchanged-state contracts.
 
 ---

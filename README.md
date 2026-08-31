@@ -7,6 +7,12 @@
 
 Something broke somewhere with your sessions in Claude Desktop. Because I'm a bit special I've broken my Desktop sessions in lots of different ways. I made this to help you diagnose and hopefully fix it if something has gone wrong for you too.
 
+## Releases
+
+Every change to this public repository is versioned. `VERSION`, the matching
+`docs/releases/vX.Y.Z.md` note, the immutable annotated `vX.Y.Z` tag, and the
+release manifest are checked by [the release process](docs/release-process.md).
+
 ## Fix it with Claude Code (or any AI)
 
 This runs best from a **Claude Code CLI session** (or Codex/ChatGPT), not from Claude Desktop because the Desktop app needs to be closed to apply the fixes. If you run it from Desktop, the tool will detect it, warn you and give you instructions if you're still more comfortable running from Claude Desktop.

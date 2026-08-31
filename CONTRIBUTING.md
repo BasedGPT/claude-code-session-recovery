@@ -21,6 +21,20 @@ This repo is maintained on a best-effort basis. PRs are welcome for:
 
 PRs that add new mutator scripts must pass all five mutator gates (see `docs/architecture.md`). A mutator without a fixture will not be merged.
 
+## Versioning gate
+
+Every pull request that changes the public repository must advance `VERSION`
+and add `docs/releases/vX.Y.Z.md` with a matching `# vX.Y.Z` heading. Run the
+release-policy check before submitting:
+
+```text
+python tools/release.py check --base <base-sha> --head <head-sha>
+```
+
+The target branch's current version must already have an immutable annotated
+`vX.Y.Z` tag. See [docs/release-process.md](docs/release-process.md) for the
+SemVer rules, tag procedure, and release manifest.
+
 ## Fixture contracts
 
 Run both suites before submitting a change:

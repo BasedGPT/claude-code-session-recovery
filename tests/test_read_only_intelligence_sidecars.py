@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 
 import pytest
@@ -33,6 +34,23 @@ def _write_jsonl(path, records):
         "".join(json.dumps(record) + "\n" for record in records),
         encoding="utf-8",
     )
+
+
+def _make_directory_link(link, target):
+    if os.name == "nt":
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            pytest.skip("directory junction unavailable")
+        return
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink unavailable")
 
 
 def _lineage_roots(tmp_path):
@@ -447,6 +465,95 @@ def test_local_agent_inventory_is_aggregate_and_does_not_parse_leveldb(tmp_path)
         assert private_value not in rendered
 
 
+def test_local_agent_inventory_separates_standard_and_nested_transcript_roots(
+    tmp_path, capsys,
+):
+    state = tmp_path / "S"
+    appdata = state / "appdata" / "Claude"
+    standard_metadata = (
+        appdata / "claude-code-sessions" / "a" / "o"
+    )
+    standard_projects = state / "projects" / "standard"
+    local_projects = (
+        appdata
+        / "local-agent-mode-sessions"
+        / "a"
+        / "o"
+        / "local_x"
+        / ".claude"
+        / "projects"
+        / "nested"
+    )
+    metadata_file = standard_metadata / "local_standard.json"
+    standard_transcript = standard_projects / (
+        "11111111-1111-4111-8111-111111111111.jsonl"
+    )
+    local_transcript = local_projects / (
+        "22222222-2222-4222-8222-222222222222.jsonl"
+    )
+    _write_json(metadata_file, {"cliSessionId": "11111111-1111-4111-8111-111111111111"})
+    _write_jsonl(standard_transcript, [{
+        "type": "user", "message": {"content": "standard private prompt"}
+    }])
+    local_projects.mkdir(parents=True, exist_ok=True)
+    assert local_projects.is_dir()
+    _write_jsonl(local_transcript, [{
+        "type": "user", "message": {"content": "nested private prompt"}
+    }])
+    before = (
+        metadata_file.read_bytes(),
+        standard_transcript.read_bytes(),
+        local_transcript.read_bytes(),
+    )
+
+    result = local_agents.inventory(
+        str(appdata / "local-agent-mode-sessions"),
+        standard_appdata_claude_dir=str(appdata),
+        standard_projects_dir=str(state / "projects"),
+    )
+
+    assert result["status"] == "complete"
+    assert result["transcript_roots"] == {
+        "projects_root_count": 1,
+        "project_directory_count": 1,
+        "transcript_file_count": 1,
+    }
+    assert result["standard_roots"] == {
+        "claude-code-sessions": {
+            "status": "complete",
+            "physical_file_count": 1,
+            "parsed_record_count": 1,
+            "error_count": 0,
+        },
+        "projects": {
+            "status": "complete",
+            "physical_file_count": 1,
+            "session_id_count": 1,
+            "duplicate_session_id_count": 0,
+            "error_count": 0,
+        },
+    }
+    rendered = json.dumps(result)
+    for private_value in (
+        str(tmp_path), "account-private", "org-private", "private-session",
+        "standard-private-slug", "nested-private-slug",
+        "standard private prompt", "nested private prompt",
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    ):
+        assert private_value not in rendered
+    assert (
+        metadata_file.read_bytes(),
+        standard_transcript.read_bytes(),
+        local_transcript.read_bytes(),
+    ) == before
+
+    assert local_agents.main(["--state", str(state), "--json"]) == 0
+    cli_result = json.loads(capsys.readouterr().out)
+    assert cli_result["transcript_roots"] == result["transcript_roots"]
+    assert cli_result["standard_roots"] == result["standard_roots"]
+
+
 def test_local_agent_inventory_reports_a_bounded_partial_result(tmp_path):
     root = tmp_path / "agents"
     owner = root / "account" / "org"
@@ -458,6 +565,69 @@ def test_local_agent_inventory_reports_a_bounded_partial_result(tmp_path):
     assert result["status"] == "partial"
     assert result["buckets"]["local_*"]["count"] == 1
     assert any(error["code"] == "session_cap_reached" for error in result["errors"])
+
+
+def test_local_agent_transcript_inventory_is_bounded(tmp_path):
+    root = tmp_path / "agents"
+    first = root / "account" / "org" / "local_one" / ".claude" / "projects" / "slug"
+    second = root / "account" / "org" / "local_two" / ".claude" / "projects" / "slug"
+    _write_jsonl(first / "11111111-1111-4111-8111-111111111111.jsonl", [])
+    _write_jsonl(second / "22222222-2222-4222-8222-222222222222.jsonl", [])
+
+    result = local_agents.inventory(str(root), max_transcript_entries=1)
+
+    assert result["status"] == "partial"
+    assert result["transcript_roots"]["transcript_file_count"] == 1
+    assert any(
+        error["code"] == "transcript_entry_cap_reached"
+        for error in result["errors"]
+    )
+
+
+def test_local_agent_inventory_rejects_nested_junction_escape(tmp_path):
+    root = tmp_path / "agents"
+    session_claude = root / "account" / "org" / "local_one" / ".claude"
+    session_claude.mkdir(parents=True)
+    outside_projects = tmp_path / "outside" / "projects"
+    outside_transcript = outside_projects / "external-slug" / (
+        "33333333-3333-4333-8333-333333333333.jsonl"
+    )
+    _write_jsonl(outside_transcript, [{"private": "outside"}])
+    junction = session_claude / "projects"
+    _make_directory_link(junction, outside_projects)
+
+    result = local_agents.inventory(str(root))
+
+    assert result["status"] == "partial"
+    assert result["transcript_roots"]["transcript_file_count"] == 0
+    assert any(
+        error["code"] in {"reparse_point_skipped", "path_outside_scan_root"}
+        for error in result["errors"]
+    )
+    rendered = json.dumps(result)
+    assert "outside" not in rendered
+    assert "33333333-3333-4333-8333-333333333333" not in rendered
+
+
+def test_standard_transcript_root_junction_is_partial_and_not_counted(tmp_path):
+    root = tmp_path / "agents"
+    root.mkdir()
+    outside_projects = tmp_path / "outside" / "projects"
+    outside_transcript = outside_projects / "external-slug" / (
+        "44444444-4444-4444-8444-444444444444.jsonl"
+    )
+    _write_jsonl(outside_transcript, [{"private": "outside standard"}])
+    standard_projects = tmp_path / "standard-projects"
+    _make_directory_link(standard_projects, outside_projects)
+
+    result = local_agents.inventory(
+        str(root), standard_projects_dir=str(standard_projects)
+    )
+
+    assert result["status"] == "partial"
+    assert result["standard_roots"]["projects"]["status"] == "partial"
+    assert result["standard_roots"]["projects"]["physical_file_count"] == 0
+    assert "44444444-4444-4444-8444-444444444444" not in json.dumps(result)
 
 
 def test_local_agent_output_cap_is_not_triggered_until_exceeded(tmp_path):

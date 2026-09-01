@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-01-02T00:00:00Z","message":{"role":"user","content":"fixture marked request"}}
+{"type":"assistant","timestamp":"2026-01-02T00:01:00Z","message":{"role":"assistant","content":"fixture marked response"}}
+{"type":"last-prompt","lastPrompt":"fixture marked request","leafUuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","sessionId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc"}

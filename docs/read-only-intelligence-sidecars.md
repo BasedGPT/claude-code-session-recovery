@@ -69,17 +69,30 @@ python tools/sessions/inventory_local_agent_sessions.py --json
 python tools/sessions/inventory_local_agent_sessions.py --state <fixture-state-path> --json
 ```
 
-`inventory_local_agent_sessions.py` traverses only the expected
-`local-agent-mode-sessions/<account>/<organisation>/local_*/outputs` directory
-shape. It reports aggregate root, owner, local-session, outputs-directory, and
+`inventory_local_agent_sessions.py` traverses the expected
+`local-agent-mode-sessions/<account>/<organisation>/local_*` directory shape.
+It reports aggregate root, owner, local-session, outputs-directory, and
 output-entry counts grouped only under the `root`, `owner`, `local_*`, and
-`outputs` structural buckets. It emits no owner or session rows and no root,
-owner, or session identifiers. Only error subjects are opaque identifiers. It
-does not read output files, parse LevelDB, inspect conversations, or classify
-any session as Cowork (or any other product mode).
+`outputs` structural buckets. It also counts nested local-agent transcript
+roots at `local_*/.claude/projects/<encoded-cwd>/*.jsonl` under
+`transcript_roots`. Those counts are kept separate from the standard
+`claude-code-sessions` metadata root and standard `projects` transcript root.
+When invoked with `--state` (or with the explicit standard-root overrides), the
+`standard_roots` section reports only bounded aggregate counts and statuses for
+those two standard roots; it never merges them with local-agent counts.
+The inventory refuses to follow observed symlinks or Windows directory
+junctions at the root or within these fixed scan shapes. A reparse point,
+outside-resolved path, or boundary-check failure is reported as partial and
+its linked entries are not counted.
 
-Directory, owner, session, and output-entry caps are enforced. Incomplete or
-unreadable traversal is explicit as `status: partial` and exit code 2.
+It emits no owner or session rows and no root, owner, or session identifiers.
+Only error subjects are opaque identifiers. It does not read local output or
+transcript files, parse LevelDB, inspect conversation content, or classify any
+session as Cowork (or any other product mode).
+
+Directory, owner, session, output-entry, and nested-transcript-entry caps are
+enforced. Incomplete or unreadable traversal is explicit as `status: partial`
+and exit code 2; a reparse-point boundary failure follows the same contract.
 
 ## VS Code session surfaces
 

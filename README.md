@@ -172,6 +172,12 @@ This is a known VS Code extension limitation (`anthropics/claude-code#31219`, cl
 Sessions in VS Code's **Local → Session History** sidebar can disappear after a restart even when the underlying transcripts are intact and `claude --resume <session-id>` works fine. The extension only reads the first and last 64 KB of each transcript file when building the sidebar list — sessions whose title entry lands in the middle of a large file are silently excluded from the cache.
 
 `diagnose.py` detects this and prints a NOTE when transcript files on disk outnumber what the VS Code cache knows about. `recover_vscode_sessions.py` fixes it by reading full transcript files and injecting the missing entries back into the extension's workspace SQLite database (`state.vscdb`).
+Its dry-run also audits every unambiguous transcript, whether or not it is
+already cached, and reports complete conversation transcripts with no
+`last-prompt` visibility marker as possible orphan forks. For this advisory
+signal, complete means valid UTF-8 and JSONL, valid user/assistant message
+records, at least one of each, and an assistant-ending conversation. The marker
+check never appends to a transcript; only `--apply` writes cache entries.
 
 ```
 python tools/sessions/recover_vscode_sessions.py          # dry-run: shows what would be injected

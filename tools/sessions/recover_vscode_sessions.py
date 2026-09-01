@@ -17,7 +17,10 @@ large file are silently excluded. This script reads full transcript files to
 find titles and reinjects missing entries.
 
 The session transcript files themselves (`~/.claude/projects/`) are not
-touched. This script only modifies `state.vscdb`.
+touched. The dry-run also reports complete conversation transcripts that have
+no `last-prompt` visibility marker as possible orphan forks. That marker audit
+is read-only and does not infer a parent or modify the transcript. This script
+only modifies `state.vscdb` when explicitly run with `--apply`.
 
 Files read:
   - %APPDATA%\\Code\\User\\workspaceStorage\\*\\state.vscdb
@@ -211,6 +214,84 @@ def _make_cache_entry(sid, title, created_ms, last_message_ms, now_ms):
             "created": timing_created,
             "lastRequestEnded": timing_last,
         },
+    }
+
+
+def _valid_conversation_record(record, record_type):
+    """Return whether a user/assistant record has the expected message shape."""
+    if not isinstance(record, dict):
+        return False
+    message = record.get("message")
+    if not isinstance(message, dict) or "content" not in message:
+        return False
+    role = message.get("role")
+    return role is None or role == record_type
+
+
+def _orphan_fork_evidence(path):
+    """Return privacy-safe marker evidence without retaining transcript content.
+
+    A possible orphan fork is a valid UTF-8 JSONL transcript with structurally
+    valid user and assistant records, at least one of each, an assistant-ending
+    conversation, and no ``last-prompt`` trailer. This is deliberately evidence
+    only: it does not infer a parent, select a leaf, or suggest writing a marker
+    into the transcript.
+    """
+    user_record_count = 0
+    assistant_record_count = 0
+    last_prompt_count = 0
+    malformed_line_count = 0
+    last_conversation_type = None
+    record_count = 0
+    try:
+        with open(path, "rb") as handle:
+            for raw_line in handle:
+                if not raw_line.strip():
+                    continue
+                try:
+                    line = raw_line.decode("utf-8")
+                    record = json.loads(line)
+                except (TypeError, UnicodeDecodeError, ValueError):
+                    malformed_line_count += 1
+                    continue
+                if not isinstance(record, dict):
+                    malformed_line_count += 1
+                    continue
+                record_count += 1
+                record_type = record.get("type")
+                if record_type == "user":
+                    if _valid_conversation_record(record, record_type):
+                        user_record_count += 1
+                        last_conversation_type = record_type
+                    else:
+                        malformed_line_count += 1
+                elif record_type == "assistant":
+                    if _valid_conversation_record(record, record_type):
+                        assistant_record_count += 1
+                        last_conversation_type = record_type
+                    else:
+                        malformed_line_count += 1
+                elif record_type == "last-prompt":
+                    last_prompt_count += 1
+    except OSError:
+        return {
+            "complete_conversation": False,
+            "last_prompt_count": 0,
+            "record_count": 0,
+            "malformed_line_count": 1,
+        }
+
+    return {
+        "complete_conversation": (
+            record_count > 0
+            and user_record_count > 0
+            and assistant_record_count > 0
+            and malformed_line_count == 0
+            and last_conversation_type == "assistant"
+        ),
+        "last_prompt_count": last_prompt_count,
+        "record_count": record_count,
+        "malformed_line_count": malformed_line_count,
     }
 
 
@@ -408,14 +489,16 @@ def main():
 
     # --- Find missing entries ---
     missing_uuids = sorted(set(disk_index.keys()) - all_cached)
-    if not missing_uuids:
-        print("All disk sessions are already present in the VS Code session cache.")
-        print("Nothing to recover.")
-        return
-
-    print(f"{len(missing_uuids)} session(s) on disk are missing from the VS Code cache:")
     now_ms = int(time.time() * 1000)
     new_entries = []
+    if missing_uuids:
+        print(
+            f"{len(missing_uuids)} session(s) on disk are missing from the "
+            "VS Code cache:"
+        )
+    else:
+        print("All disk sessions are already present in the VS Code session cache.")
+
     for sid in missing_uuids:
         jsonl_path = disk_index[sid]
         title, created_ms, last_message_ms = cache_metadata(jsonl_path)
@@ -430,6 +513,36 @@ def main():
         label = title or "(no title found)"
         print(f"  {sid[:12]}...  {ts_display:>16}  {label[:55]}")
     print()
+
+    # --- Audit all unambiguous transcripts, including sessions already cached ---
+    orphan_fork_candidates = []
+    for sid in sorted(disk_index):
+        marker_evidence = _orphan_fork_evidence(disk_index[sid])
+        if (
+            marker_evidence["complete_conversation"]
+            and marker_evidence["last_prompt_count"] == 0
+        ):
+            orphan_fork_candidates.append(sid)
+
+    print(
+        "Read-only orphan-fork marker audit: {} candidate(s)".format(
+            len(orphan_fork_candidates)
+        )
+    )
+    for sid in orphan_fork_candidates:
+        print(
+            f"  {sid[:12]}...  complete conversation, "
+            "no last-prompt visibility marker"
+        )
+    print(
+        "  This marker audit writes no transcript marker; cache writes remain "
+        "controlled by --apply."
+    )
+    print()
+
+    if not missing_uuids:
+        print("Nothing to recover.")
+        return
 
     if not args.apply:
         print(

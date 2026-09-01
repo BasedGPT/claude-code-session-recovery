@@ -58,6 +58,13 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Restore annotated release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin \
+            "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

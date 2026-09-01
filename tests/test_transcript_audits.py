@@ -65,6 +65,42 @@ def _record(uuid, parent=None, message_id=None):
     return json.dumps(value, separators=(",", ":")).encode("utf-8")
 
 
+@pytest.mark.parametrize(
+    "metadata,expected_orphan",
+    [
+        ({"sessionId": "local_{sid}", "cliSessionId": None}, False),
+        ({"sessionId": "local_{sid}"}, True),
+        ({"sessionId": "local_{sid}", "cliSessionId": None, "isArchived": True}, True),
+        ({"sessionId": "local_not-a-uuid", "cliSessionId": None}, True),
+    ],
+)
+def test_synthesis_only_uses_session_id_fallback_for_unarchived_explicit_null_cli(
+    tmp_path, metadata, expected_orphan
+):
+    sid = "12345678-1234-1234-1234-123456789abc"
+    metadata = {
+        key: value.format(sid=sid) if isinstance(value, str) else value
+        for key, value in metadata.items()
+    }
+    appdata = tmp_path / "appdata" / "Claude"
+    _write(
+        appdata
+        / "claude-code-sessions"
+        / "account"
+        / "organisation"
+        / "local_one.json",
+        json.dumps(metadata),
+    )
+    projects = tmp_path / "projects"
+    transcript = _write(projects / "slug" / f"{sid}.jsonl", b"{}\n")
+
+    orphans = synth_session_metadata._find_orphan_jsonls(
+        str(appdata), str(projects)
+    )
+
+    assert (orphans == {sid: str(transcript)}) is expected_orphan
+
+
 def test_integrity_counts_graph_facts_without_emitting_content(tmp_path):
     path = tmp_path / "projects" / "slug" / "one.jsonl"
     lines = [

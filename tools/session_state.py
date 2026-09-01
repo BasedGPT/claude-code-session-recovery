@@ -17,7 +17,7 @@ from transcript_files import (
     build_transcript_path_inventory,
     count_assistant_records,
 )
-from session_metadata import build_metadata_path_inventory
+from session_metadata import build_metadata_path_inventory, referenced_transcript_id
 from platform_support import (
     default_claude_appdata_dir,
     default_claude_paths,
@@ -61,6 +61,13 @@ def classify_cwd(cwd):
     """Classify a cwd path as junction, canonical, bare_root, or other."""
     if not cwd:
         return "other"
+    parts = cwd.replace("\\", "/").rstrip("/").split("/")
+    clean_parts = [part for part in parts if part and part != ":"]
+    # Bare-root metadata is a lexical recovery signal.  Classify it before
+    # consulting the host filesystem so Windows fixtures remain meaningful on
+    # macOS and stale roots remain diagnosable after they disappear.
+    if len(clean_parts) <= 2:
+        return "bare_root"
     try:
         real = os.path.realpath(cwd)
     except OSError:
@@ -69,10 +76,6 @@ def classify_cwd(cwd):
         return "other"
     if os.path.normcase(real) != os.path.normcase(cwd):
         return "junction"
-    parts = cwd.replace("\\", "/").rstrip("/").split("/")
-    clean_parts = [part for part in parts if part and part != ":"]
-    if len(clean_parts) <= 2:
-        return "bare_root"
     return "canonical"
 
 
@@ -323,7 +326,9 @@ def build_snapshot(
 
     all_transcript_ids = set(transcript_paths)
     referenced_ids = {
-        data.get("cliSessionId") for _path, data in metadata_files if data.get("cliSessionId")
+        transcript_id
+        for _path, data in metadata_files
+        if (transcript_id := referenced_transcript_id(data))
     }
     orphan_count = (
         len(all_transcript_ids - referenced_ids) if cross_store_complete else 0

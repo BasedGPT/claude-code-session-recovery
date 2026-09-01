@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -38,9 +36,6 @@ class ReleasePolicyTests(unittest.TestCase):
         self, root: Path, version: str, *, tool_text: str = "print('ok')\n"
     ) -> None:
         (root / "VERSION").write_text(version + "\n", encoding="utf-8")
-        note = root / "docs" / "releases" / f"v{version}.md"
-        note.parent.mkdir(parents=True, exist_ok=True)
-        note.write_text(f"# v{version}\n\nRelease note.\n", encoding="utf-8")
         tool = root / "tools" / "example.py"
         tool.parent.mkdir(parents=True, exist_ok=True)
         tool.write_text(tool_text, encoding="utf-8")
@@ -66,7 +61,6 @@ class ReleasePolicyTests(unittest.TestCase):
 
             self.assertIsNone(result.base_version)
             self.assertEqual(result.head_version, "1.0.0")
-            self.assertEqual(result.release_note, "docs/releases/v1.0.0.md")
 
     def test_future_transition_requires_prior_annotated_tag_and_increasing_version(
         self,
@@ -114,23 +108,19 @@ class ReleasePolicyTests(unittest.TestCase):
             result = release.check_tag(root, "v1.0.0", commit)
             self.assertEqual(result.commit, commit)
 
-    def test_manifest_is_deterministic_and_hashes_committed_tool_bytes(self) -> None:
+    def test_transition_requires_version_change_for_public_changes(self) -> None:
         temporary, root = self._repo()
         with temporary:
-            self._write_release(root, "1.0.0", tool_text="print('raw bytes')\n")
-            commit = self._commit(root, "baseline")
-            manifest = release.build_manifest(root, commit)
-            repeated = release.build_manifest(root, commit)
+            self._write_release(root, "1.0.0")
+            base = self._commit(root, "baseline")
+            self._git(root, "tag", "-a", "v1.0.0", "-m", "Release v1.0.0")
+            (root / "README.md").write_text("documentation only\n", encoding="utf-8")
+            head = self._commit(root, "documentation without version bump")
 
-            self.assertEqual(manifest, repeated)
-            self.assertEqual(manifest["commit"], commit)
-            files = {item["path"]: item for item in manifest["files"]}
-            self.assertIn("tools/example.py", files)
-            self.assertEqual(
-                files["tools/example.py"]["sha256"],
-                hashlib.sha256(b"print('raw bytes')\n").hexdigest(),
-            )
-            self.assertEqual(json.loads(release.manifest_text(manifest)), manifest)
+            with self.assertRaisesRegex(
+                release.ReleasePolicyError, "every public change must change VERSION"
+            ):
+                release.check_transition(root, base, head)
 
 
 if __name__ == "__main__":

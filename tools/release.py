@@ -1,17 +1,14 @@
-"""Validate and attest versioned public toolkit releases.
+"""Validate versioned public toolkit releases.
 
 The repository has no package installer metadata, so VERSION is the single
 source of the human release identity. This module is the shared seam for the
-local check, pull-request CI, tag verification, and release manifest. It is
-deliberately read-only except for the optional generated manifest output.
+local check, pull-request CI, and tag verification.
 """
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-import hashlib
-import json
 from pathlib import Path
 import re
 import subprocess
@@ -20,9 +17,6 @@ from typing import Sequence
 
 
 VERSION_PATH = "VERSION"
-RELEASE_NOTE_DIR = "docs/releases"
-TOOL_PATH = "tools"
-MANIFEST_SCHEMA_VERSION = "release-manifest-v1"
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 TAG_RE = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -52,7 +46,6 @@ class TransitionCheck:
     head_commit: str
     base_version: str | None
     head_version: str
-    release_note: str
     changed_paths: tuple[str, ...]
 
 
@@ -165,42 +158,6 @@ def changed_paths(root: Path, base: str, head: str) -> tuple[str, ...]:
     return tuple(sorted(paths))
 
 
-def _release_note_path(version: Version) -> str:
-    return f"{RELEASE_NOTE_DIR}/v{version}.md"
-
-
-def _validate_release_note(
-    root: Path,
-    *,
-    base: str,
-    head: str,
-    version: Version,
-    paths: tuple[str, ...],
-) -> str:
-    note_path = _release_note_path(version)
-    if note_path not in paths:
-        raise ReleasePolicyError(
-            f"version {version} requires a changed release note at {note_path}"
-        )
-    if _read_blob(root, base, note_path) is not None:
-        raise ReleasePolicyError(
-            f"release note {note_path} already exists at the base commit"
-        )
-    blob = _read_blob(root, head, note_path)
-    if blob is None:
-        raise ReleasePolicyError(f"release note {note_path} is absent at the head commit")
-    try:
-        text = blob.decode("utf-8-sig")
-    except UnicodeDecodeError as error:
-        raise ReleasePolicyError(f"release note {note_path} is not UTF-8") from error
-    heading = re.compile(rf"^#\s+v{re.escape(str(version))}(?:\s|$)")
-    if not any(heading.match(line) for line in text.splitlines()):
-        raise ReleasePolicyError(
-            f"release note {note_path} must contain a '# v{version}' heading"
-        )
-    return note_path
-
-
 def check_tag(root: Path, tag: str, ref: str = "HEAD") -> TagCheck:
     """Require an annotated ``vX.Y.Z`` tag to point exactly at ``ref``."""
     tag = _validate_ref(tag)
@@ -251,70 +208,13 @@ def check_transition(root: Path, base: str, head: str = "HEAD") -> TransitionChe
                 f"VERSION must increase from {base_version} to {head_version}"
             )
         check_tag(root, f"v{base_version}", base)
-    note_path = _validate_release_note(
-        root,
-        base=base,
-        head=head,
-        version=head_version,
-        paths=paths,
-    )
     return TransitionCheck(
         base_commit=base_commit,
         head_commit=head_commit,
         base_version=None if base_version is None else str(base_version),
         head_version=str(head_version),
-        release_note=note_path,
         changed_paths=paths,
     )
-
-
-def _tool_paths(root: Path, ref: str) -> tuple[str, ...]:
-    raw = _git_bytes(
-        root, "ls-tree", "-r", "--name-only", "-z", ref, "--", TOOL_PATH
-    )
-    return tuple(
-        sorted(
-            item.replace("\\", "/")
-            for item in raw.decode("utf-8", errors="strict").split("\x00")
-            if item
-        )
-    )
-
-
-def build_manifest(root: Path, ref: str = "HEAD") -> dict[str, object]:
-    """Build a deterministic manifest for one exact committed release ref."""
-    ref = _validate_ref(ref)
-    commit = resolve_commit(root, ref)
-    version = read_version_at(root, ref)
-    if version is None:
-        raise ReleasePolicyError(f"{ref}: VERSION is missing")
-    note_path = _release_note_path(version)
-    paths = tuple(sorted({VERSION_PATH, note_path, *_tool_paths(root, ref)}))
-    files: list[dict[str, object]] = []
-    for path in paths:
-        blob = _read_blob(root, ref, path)
-        if blob is None:
-            raise ReleasePolicyError(f"manifest file is absent at {ref}: {path}")
-        files.append(
-            {
-                "path": path,
-                "bytes": len(blob),
-                "sha256": hashlib.sha256(blob).hexdigest(),
-            }
-        )
-    return {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
-        "version": str(version),
-        "tag": f"v{version}",
-        "commit": commit,
-        "scope": [VERSION_PATH, note_path, f"{TOOL_PATH}/**"],
-        "files": files,
-    }
-
-
-def manifest_text(manifest: dict[str, object]) -> str:
-    """Serialize a manifest without time or environment-dependent fields."""
-    return json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -334,16 +234,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tag_parser = subparsers.add_parser("tag-check")
     tag_parser.add_argument("--tag", required=True)
     tag_parser.add_argument("--ref", default="HEAD")
-
-    manifest_parser = subparsers.add_parser("manifest")
-    manifest_parser.add_argument("--ref", default="HEAD")
-    manifest_parser.add_argument("--output", type=Path)
     return parser
-
-
-def _write_manifest(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -359,7 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "RELEASE_POLICY_OK "
                 f"version={result.head_version} "
                 f"base={result.base_commit} head={result.head_commit} "
-                f"release_note={result.release_note} changed={len(result.changed_paths)}"
+                f"changed={len(result.changed_paths)}"
             )
             return 0
         if args.command == "tag-check":
@@ -368,14 +259,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"RELEASE_TAG_OK tag={result.tag} version={result.version} "
                 f"commit={result.commit}"
             )
-            return 0
-        if args.command == "manifest":
-            text = manifest_text(build_manifest(root, args.ref))
-            if args.output is None:
-                sys.stdout.write(text)
-            else:
-                _write_manifest(args.output, text)
-                print(f"RELEASE_MANIFEST_WRITTEN path={args.output}")
             return 0
         raise ReleasePolicyError(f"unknown command {args.command}")
     except ReleasePolicyError as error:

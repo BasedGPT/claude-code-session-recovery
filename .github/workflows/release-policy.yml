@@ -50,7 +50,7 @@ jobs:
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,29 +68,3 @@ jobs:
           python -m pip install -r requirements-dev.txt
           python -m pytest -q tests
           python tests/run_fixture_tests.py
-
-      - name: Build release manifest
-        shell: bash
-        run: |
-          set -euo pipefail
-          python tools/release.py manifest \
-            --ref "$GITHUB_REF_NAME" \
-            --output "release-manifest-$GITHUB_REF_NAME.json"
-
-      - name: Publish GitHub release and manifest
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="$GITHUB_REF_NAME"
-          manifest="release-manifest-$tag.json"
-          notes="docs/releases/$tag.md"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$manifest" --clobber
-          else
-            gh release create "$tag" "$manifest" \
-              --verify-tag \
-              --title "$tag" \
-              --notes-file "$notes"
-          fi

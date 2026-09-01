@@ -24,8 +24,7 @@ PRs that add new mutator scripts must pass all five mutator gates (see `docs/arc
 ## Versioning gate
 
 Every pull request that changes the public repository must advance `VERSION`
-and add `docs/releases/vX.Y.Z.md` with a matching `# vX.Y.Z` heading. Run the
-release-policy check before submitting:
+and pass the release-policy check before submitting:
 
 ```text
 python tools/release.py check --base <base-sha> --head <head-sha>
@@ -33,7 +32,7 @@ python tools/release.py check --base <base-sha> --head <head-sha>
 
 The target branch's current version must already have an immutable annotated
 `vX.Y.Z` tag. See [docs/release-process.md](docs/release-process.md) for the
-SemVer rules, tag procedure, and release manifest.
+SemVer rules and tag procedure.
 
 ## Fixture contracts
 

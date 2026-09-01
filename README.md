@@ -10,8 +10,8 @@ Something broke somewhere with your sessions in Claude Desktop. Because I'm a bi
 ## Releases
 
 Every change to this public repository is versioned. `VERSION`, the matching
-`docs/releases/vX.Y.Z.md` note, the immutable annotated `vX.Y.Z` tag, and the
-release manifest are checked by [the release process](docs/release-process.md).
+annotated `vX.Y.Z` tag, and the exact tagged commit are checked by [the release
+process](docs/release-process.md).
 
 ## Fix it with Claude Code (or any AI)
 

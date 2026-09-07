@@ -9,6 +9,7 @@ classification (including Cowork) is attempted.
 
 import argparse
 import os
+import stat
 import sys
 
 _TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,7 +44,20 @@ def _is_reparse_point(path):
         if os.path.islink(path):
             return True
         isjunction = getattr(os.path, "isjunction", None)
-        return bool(isjunction and isjunction(path))
+        if isjunction is not None:
+            return bool(isjunction(path))
+        if os.name != "nt":
+            return False
+        try:
+            attributes = getattr(os.lstat(path), "st_file_attributes", None)
+        except FileNotFoundError:
+            return False
+        # Python 3.11 does not expose os.path.isjunction, but Windows
+        # reparse points are already reported by lstat().  Keep the fallback
+        # fail-closed if the runtime omits the attribute unexpectedly.
+        if attributes is None:
+            return True
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
     except OSError:
         return True
 

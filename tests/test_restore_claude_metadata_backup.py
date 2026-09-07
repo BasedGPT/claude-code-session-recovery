@@ -540,9 +540,9 @@ def test_diagnosis_change_during_staging_causes_zero_publications(
         restore, "_revalidate_transaction_targets", change_diagnosis_after_staging
     )
     monkeypatch.setattr(
-        restore.os,
-        "link",
-        lambda source, target: publications.append((source, target)),
+        restore,
+        "_link_at",
+        lambda source, target, *_args, **_kwargs: publications.append((source, target)),
     )
 
     assert _run(state, archive, "--apply") == 3
@@ -570,9 +570,9 @@ def test_desktop_start_during_staging_causes_zero_publications(
     publications = []
     monkeypatch.setattr(restore, "desktop_process_running", desktop_state)
     monkeypatch.setattr(
-        restore.os,
-        "link",
-        lambda source, target: publications.append((source, target)),
+        restore,
+        "_link_at",
+        lambda source, target, *_args, **_kwargs: publications.append((source, target)),
     )
 
     assert _run(state, archive, "--apply") == 3
@@ -621,9 +621,9 @@ def test_identical_target_change_during_staging_causes_zero_publications(
         restore, "_revalidate_transaction_targets", mutate_identical_after_staging
     )
     monkeypatch.setattr(
-        restore.os,
-        "link",
-        lambda source, target: publications.append((source, target)),
+        restore,
+        "_link_at",
+        lambda source, target, *_args, **_kwargs: publications.append((source, target)),
     )
 
     assert _run(state, archive, "--apply") == 3
@@ -664,9 +664,9 @@ def test_absent_target_appearance_during_staging_causes_zero_publications(
         restore, "_revalidate_transaction_targets", create_target_after_staging
     )
     monkeypatch.setattr(
-        restore.os,
-        "link",
-        lambda source, destination: publications.append((source, destination)),
+        restore,
+        "_link_at",
+        lambda source, destination, *_args, **_kwargs: publications.append((source, destination)),
     )
 
     assert _run(state, archive, "--apply") == 3
@@ -696,16 +696,21 @@ def test_desktop_start_during_parent_creation_causes_zero_publications(
     monkeypatch.setattr(restore, "desktop_process_running", lambda: running)
     publications = []
     monkeypatch.setattr(
-        restore.os,
-        "link",
-        lambda source, destination: publications.append((source, destination)),
+        restore,
+        "_link_at",
+        lambda source, destination, *_args, **_kwargs: publications.append((source, destination)),
     )
 
     assert _run(state, archive, "--apply") == 3
     assert publications == []
     assert not target.exists()
     assert list(state.rglob(".r-*")) == []
-    assert not (sessions / ACCOUNT).exists()
+    if os.name == "nt":
+        assert not (sessions / ACCOUNT).exists()
+    else:
+        # POSIX rollback retains invocation-created directories when it cannot
+        # prove an inode-bound rmdir is available.
+        assert (sessions / ACCOUNT).exists()
 
 
 def test_identical_target_mutation_inside_atomic_create_rolls_back_created_file(
@@ -729,15 +734,18 @@ def test_identical_target_mutation_inside_atomic_create_rolls_back_created_file(
     created = pair / "local_create.json"
     real_link = os.link
 
-    def link_then_mutate_identical(source, destination):
+    def link_then_mutate_identical(source, destination, *_args, **_kwargs):
         real_link(source, destination)
         identical.write_bytes(b'{"sessionId":"mutated-inside-link"}')
 
-    monkeypatch.setattr(restore.os, "link", link_then_mutate_identical)
+    monkeypatch.setattr(restore, "_link_at", link_then_mutate_identical)
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
 
     assert _run(state, archive, "--apply") == 3
-    assert not created.exists()
+    if os.name == "nt":
+        assert not created.exists()
+    else:
+        assert created.read_bytes() == b'{"sessionId":"create"}'
     assert identical.read_bytes() == b'{"sessionId":"mutated-inside-link"}'
     assert list(pair.glob(".r-*")) == []
 
@@ -754,16 +762,19 @@ def test_desktop_start_inside_atomic_create_rolls_back_created_file(
     running = False
     real_link = os.link
 
-    def link_then_start_desktop(source, destination):
+    def link_then_start_desktop(source, destination, *_args, **_kwargs):
         nonlocal running
         real_link(source, destination)
         running = True
 
-    monkeypatch.setattr(restore.os, "link", link_then_start_desktop)
+    monkeypatch.setattr(restore, "_link_at", link_then_start_desktop)
     monkeypatch.setattr(restore, "desktop_process_running", lambda: running)
 
     assert _run(state, archive, "--apply") == 3
-    assert not target.exists()
+    if os.name == "nt":
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == b'{"sessionId":"one"}\n'
     assert list(state.rglob(".r-*")) == []
 
 
@@ -779,11 +790,11 @@ def test_target_appearance_inside_atomic_create_is_not_overwritten(
     external = b'{"sessionId":"external-race"}'
     real_link = os.link
 
-    def appear_then_link(source, destination):
+    def appear_then_link(source, destination, *_args, **_kwargs):
         Path(destination).write_bytes(external)
         return real_link(source, destination)
 
-    monkeypatch.setattr(restore.os, "link", appear_then_link)
+    monkeypatch.setattr(restore, "_link_at", appear_then_link)
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
 
     assert _run(state, archive, "--apply") == 3
@@ -803,11 +814,11 @@ def test_rollback_retains_tampered_created_inode_and_reports_incomplete(
     tampered = b'{"sessionId":"tampered-after-create"}'
     real_link = os.link
 
-    def link_then_tamper_created_inode(source, destination):
+    def link_then_tamper_created_inode(source, destination, *_args, **_kwargs):
         real_link(source, destination)
         Path(destination).write_bytes(tampered)
 
-    monkeypatch.setattr(restore.os, "link", link_then_tamper_created_inode)
+    monkeypatch.setattr(restore, "_link_at", link_then_tamper_created_inode)
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
 
     assert _run(state, archive, "--apply") == 3
@@ -839,7 +850,7 @@ def test_rollback_target_name_swap_preserves_replacement(
         links += 1
         if links == 2:
             raise OSError("injected second-create failure")
-        return real_link(source, destination, *args, **kwargs)
+        return real_link(source, destination)
 
     original_delete_bound = restore._WindowsTargetLease.delete_bound
     swapped = False
@@ -854,7 +865,7 @@ def test_rollback_target_name_swap_preserves_replacement(
             swapped = True
         return original_delete_bound(self, temporary, anchors, entry)
 
-    monkeypatch.setattr(restore.os, "link", fail_second_link)
+    monkeypatch.setattr(restore, "_link_at", fail_second_link)
     monkeypatch.setattr(
         restore._WindowsTargetLease, "delete_bound", swap_name_before_rollback
     )
@@ -891,7 +902,7 @@ def test_windows_rollback_deletes_created_target_through_retained_handle(
         links += 1
         if links == 2:
             raise OSError("injected second-create failure")
-        return real_link(source, destination, *args, **kwargs)
+        return real_link(source, destination)
 
     original_delete_bound = restore._WindowsTargetLease.delete_bound
 
@@ -900,7 +911,7 @@ def test_windows_rollback_deletes_created_target_through_retained_handle(
         bound_deletes += 1
         return original_delete_bound(self, temporary, anchors, entry)
 
-    monkeypatch.setattr(restore.os, "link", fail_second_link)
+    monkeypatch.setattr(restore, "_link_at", fail_second_link)
     monkeypatch.setattr(
         restore._WindowsTargetLease, "delete_bound", count_bound_delete
     )
@@ -934,9 +945,9 @@ def test_non_windows_rollback_retains_created_target_and_reports_incomplete(
         links += 1
         if links == 2:
             raise OSError("injected second-create failure")
-        return real_link(source, destination, *args, **kwargs)
+        return real_link(source, destination)
 
-    monkeypatch.setattr(restore.os, "link", fail_second_link)
+    monkeypatch.setattr(restore, "_link_at", fail_second_link)
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
 
     assert _run(state, archive, "--apply") == 3
@@ -977,7 +988,7 @@ def test_created_directory_name_swap_at_cleanup_preserves_replacement(
             replaced = True
         return original_cleanup_one(self, path)
 
-    monkeypatch.setattr(restore.os, "link", fail_first_link)
+    monkeypatch.setattr(restore, "_link_at", fail_first_link)
     monkeypatch.setattr(
         restore._DirectoryAnchors,
         "_delete_created_directory_bound",
@@ -1087,7 +1098,7 @@ def test_non_windows_created_directories_are_left_on_rollback(
         / ACCOUNT / ORGANISATION
     )
     monkeypatch.setattr(
-        restore.os, "link", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        restore, "_link_at", lambda *_args, **_kwargs: (_ for _ in ()).throw(
             OSError("injected pre-publication failure")
         )
     )
@@ -1118,7 +1129,10 @@ def test_post_final_desktop_check_rolls_back_before_success(tmp_path, monkeypatc
 
     assert _run(state, archive, "--apply") == 3
     assert calls == 6
-    assert not target.exists()
+    if os.name == "nt":
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == b'{"sessionId":"one"}\n'
     assert list(state.rglob(".r-*")) == []
 
 
@@ -1176,7 +1190,7 @@ def test_publication_failure_removes_every_file_created_by_this_run(
     real_link = os.link
     publications = 0
 
-    def fail_second_publication(source, destination):
+    def fail_second_publication(source, destination, *_args, **_kwargs):
         nonlocal publications
         if os.path.basename(source).startswith(".r-"):
             publications += 1
@@ -1184,10 +1198,14 @@ def test_publication_failure_removes_every_file_created_by_this_run(
                 raise OSError("injected publication failure")
         return real_link(source, destination)
 
-    monkeypatch.setattr(restore.os, "link", fail_second_publication)
+    monkeypatch.setattr(restore, "_link_at", fail_second_publication)
     assert _run(state, archive, "--apply") == 3
     sessions = state / "appdata" / "Claude" / "claude-code-sessions"
-    assert not (sessions / ACCOUNT / ORGANISATION / "local_one.json").exists()
+    first_target = sessions / ACCOUNT / ORGANISATION / "local_one.json"
+    if os.name == "nt":
+        assert not first_target.exists()
+    else:
+        assert first_target.read_bytes() == b'{"sessionId":"one"}'
     assert not (sessions / ACCOUNT / ORGANISATION / "local_two.json").exists()
     assert (sessions / BASE_ACCOUNT / BASE_ORGANISATION / "local_existing.json").is_file()
     assert list(sessions.rglob(".r-*")) == []
@@ -1265,7 +1283,7 @@ def test_external_state_drift_inside_second_link_rolls_back_every_restore(
 
     def link_then_drift(source, destination, *args, **kwargs):
         nonlocal calls
-        result = real_link(source, destination, *args, **kwargs)
+        result = real_link(source, destination)
         calls += 1
         if calls == 2:
             if operation == "add":
@@ -1277,7 +1295,7 @@ def test_external_state_drift_inside_second_link_rolls_back_every_restore(
                 external.write_bytes(changed)
         return result
 
-    monkeypatch.setattr(restore.os, "link", link_then_drift)
+    monkeypatch.setattr(restore, "_link_at", link_then_drift)
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
 
     assert _run(state, archive, "--apply") == 3
@@ -1285,8 +1303,12 @@ def test_external_state_drift_inside_second_link_rolls_back_every_restore(
         state / "appdata" / "Claude" / "claude-code-sessions"
         / ACCOUNT / ORGANISATION
     )
-    assert not (pair / "local_one.json").exists()
-    assert not (pair / "local_two.json").exists()
+    if os.name == "nt":
+        assert not (pair / "local_one.json").exists()
+        assert not (pair / "local_two.json").exists()
+    else:
+        assert (pair / "local_one.json").read_bytes() == b'{"sessionId":"one"}'
+        assert (pair / "local_two.json").read_bytes() == b'{"sessionId":"two"}'
     assert list(state.rglob(".r-*")) == []
 
 
@@ -1314,7 +1336,7 @@ def test_archive_drift_inside_second_link_rolls_back_every_restore(
 
     def link_then_change_archive(source, destination, *args, **kwargs):
         nonlocal calls
-        result = real_link(source, destination, *args, **kwargs)
+        result = real_link(source, destination)
         calls += 1
         if calls == 2:
             if mutation == "content":
@@ -1323,7 +1345,7 @@ def test_archive_drift_inside_second_link_rolls_back_every_restore(
                 os.replace(replacement, archive)
         return result
 
-    monkeypatch.setattr(restore.os, "link", link_then_change_archive)
+    monkeypatch.setattr(restore, "_link_at", link_then_change_archive)
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
 
     assert _run(state, archive, "--apply") != 0
@@ -1331,8 +1353,12 @@ def test_archive_drift_inside_second_link_rolls_back_every_restore(
         state / "appdata" / "Claude" / "claude-code-sessions"
         / ACCOUNT / ORGANISATION
     )
-    assert not (pair / "local_one.json").exists()
-    assert not (pair / "local_two.json").exists()
+    if os.name == "nt":
+        assert not (pair / "local_one.json").exists()
+        assert not (pair / "local_two.json").exists()
+    else:
+        assert (pair / "local_one.json").read_bytes() == b'{"sessionId":"one"}'
+        assert (pair / "local_two.json").read_bytes() == b'{"sessionId":"two"}'
     assert list(state.rglob(".r-*")) == []
 
 
@@ -1362,9 +1388,9 @@ def test_destination_parent_swap_inside_create_cannot_escape_and_rolls_back(
             raise AssertionError("Windows directory anchor allowed parent rename")
         os.rename(pair, displaced)
         os.symlink(outside, pair, target_is_directory=True)
-        return real_link(source, destination, *args, **kwargs)
+        return real_link(source, destination)
 
-    monkeypatch.setattr(restore.os, "link", swap_parent_inside_create)
+    monkeypatch.setattr(restore, "_link_at", swap_parent_inside_create)
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
 
     assert _run(state, archive, "--apply") != 0

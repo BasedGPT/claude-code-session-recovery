@@ -90,6 +90,109 @@ class RestoreFailure(RuntimeError):
     """Staging or publication failed after the restore plan was accepted."""
 
 
+def _posix_at_available(name: str) -> bool:
+    """Return whether the host libc exposes one of the required *at calls."""
+    try:
+        import ctypes
+
+        getattr(ctypes.CDLL(None), name)
+    except (AttributeError, OSError):
+        return False
+    return True
+
+
+def _posix_link_at(source_fd: int, source: str, target_fd: int, target: str) -> None:
+    """Create a hard link through libc when Python lacks linkat support."""
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        linkat = libc.linkat
+    except (AttributeError, OSError) as exc:
+        raise RestoreRefusal("platform lacks a safe descriptor-relative link operation") from exc
+    linkat.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+    ]
+    linkat.restype = ctypes.c_int
+    result = linkat(
+        source_fd,
+        os.fsencode(source),
+        target_fd,
+        os.fsencode(target),
+        0,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), source, target)
+
+
+def _posix_unlink_at(parent_fd: int, name: str) -> None:
+    """Unlink through libc when Python lacks unlinkat support."""
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        unlinkat = libc.unlinkat
+    except (AttributeError, OSError) as exc:
+        raise RestoreRefusal("platform lacks a safe descriptor-relative unlink operation") from exc
+    unlinkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    unlinkat.restype = ctypes.c_int
+    result = unlinkat(parent_fd, os.fsencode(name), 0)
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), name)
+
+
+def _link_at(
+    source: str,
+    target: str,
+    source_fd: int | None = None,
+    target_fd: int | None = None,
+) -> None:
+    """Create a link while keeping the destination directory descriptor-bound."""
+    if os.name == "nt":
+        os.link(source, target)
+        return
+    source_name = os.path.basename(source)
+    target_name = os.path.basename(target)
+    if source_fd is None or target_fd is None:
+        raise RestoreRefusal("descriptor-relative link requires directory anchors")
+    try:
+        if os.link in os.supports_dir_fd:
+            os.link(
+                source_name,
+                target_name,
+                src_dir_fd=source_fd,
+                dst_dir_fd=target_fd,
+                follow_symlinks=False,
+            )
+            return
+    except NotImplementedError:
+        pass
+    _posix_link_at(source_fd, source_name, target_fd, target_name)
+
+
+def _unlink_at(path: str, parent_fd: int | None = None) -> None:
+    """Unlink while keeping the parent directory descriptor-bound."""
+    if os.name == "nt":
+        os.unlink(path)
+        return
+    if parent_fd is None:
+        raise RestoreRefusal("descriptor-relative unlink requires directory anchors")
+    name = os.path.basename(path)
+    try:
+        if os.unlink in os.supports_dir_fd:
+            os.unlink(name, dir_fd=parent_fd)
+            return
+    except NotImplementedError:
+        pass
+    _posix_unlink_at(parent_fd, name)
+
+
 @dataclass(frozen=True)
 class RestoreEntry:
     archive_path: str
@@ -753,30 +856,35 @@ class _DirectoryAnchors:
                         handle, record = _windows_directory_record(path)
                     self.records[key] = (handle, record)
             else:
-                required = all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW"))
-                if (
-                    not required
-                    or os.link not in os.supports_dir_fd
-                    or os.unlink not in os.supports_dir_fd
-                    or os.stat not in os.supports_dir_fd
+                nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+                missing = []
+                if nofollow_flag is None:
+                    missing.append("O_NOFOLLOW")
+                if os.open not in os.supports_dir_fd:
+                    missing.append("openat")
+                if not (
+                    os.link in os.supports_dir_fd
+                    or _posix_at_available("linkat")
                 ):
+                    missing.append("linkat")
+                if not (
+                    os.unlink in os.supports_dir_fd
+                    or _posix_at_available("unlinkat")
+                ):
+                    missing.append("unlinkat")
+                if missing:
                     raise RestoreRefusal(
-                        "platform cannot anchor destination directories safely"
+                        "platform cannot anchor destination directories safely "
+                        "(missing {})".format(", ".join(missing))
                     )
-                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                # O_DIRECTORY is not exposed by every POSIX Python build.
+                # fstat() below still verifies that each retained descriptor
+                # is a directory, while O_NOFOLLOW protects the final path
+                # component from symlink substitution.
+                directory_flag = getattr(os, "O_DIRECTORY", 0)
+                flags = os.O_RDONLY | directory_flag | nofollow_flag
                 for path in self.paths:
-                    if _normal_path(path) == _normal_path(self.sessions_root):
-                        descriptor = os.open(path, flags)
-                    else:
-                        parent_key = _normal_path(os.path.dirname(path))
-                        if parent_key not in self.records:
-                            raise RestoreRefusal(
-                                "destination anchor chain is incomplete"
-                            )
-                        parent_fd, _parent_record = self.records[parent_key]
-                        descriptor = os.open(
-                            os.path.basename(path), flags, dir_fd=parent_fd
-                        )
+                    descriptor = self._open_directory(path, flags)
                     result = os.fstat(descriptor)
                     if not stat_module.S_ISDIR(result.st_mode):
                         os.close(descriptor)
@@ -799,6 +907,16 @@ class _DirectoryAnchors:
             except OSError:
                 pass
         self.records.clear()
+
+    def _open_directory(self, path: str, flags: int) -> int:
+        """Open one anchored directory through its retained parent descriptor."""
+        if _normal_path(path) == _normal_path(self.sessions_root):
+            return os.open(path, flags)
+        parent_key = _normal_path(os.path.dirname(path))
+        if parent_key not in self.records:
+            raise RestoreRefusal("destination anchor chain is incomplete")
+        parent_fd, _parent_record = self.records[parent_key]
+        return os.open(os.path.basename(path), flags, dir_fd=parent_fd)
 
     def verify(self) -> None:
         root_key = _normal_path(self.sessions_root)
@@ -835,10 +953,19 @@ class _DirectoryAnchors:
                 del held
             else:
                 held_stat = os.fstat(held)
-                path_stat = os.stat(path, follow_symlinks=False)
+                flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+                try:
+                    probe = self._open_directory(path, flags)
+                except OSError as exc:
+                    raise RestoreRefusal(
+                        "destination directory anchor cannot be revalidated"
+                    ) from exc
+                try:
+                    path_stat = os.fstat(probe)
+                finally:
+                    os.close(probe)
                 if (
-                    stat_module.S_ISLNK(path_stat.st_mode)
-                    or not stat_module.S_ISDIR(path_stat.st_mode)
+                    not stat_module.S_ISDIR(path_stat.st_mode)
                     or (held_stat.st_dev, held_stat.st_ino, held_stat.st_mode) != expected
                     or (path_stat.st_dev, path_stat.st_ino) != (held_stat.st_dev, held_stat.st_ino)
                 ):
@@ -854,7 +981,14 @@ class _DirectoryAnchors:
         if os.name == "nt":
             return os.stat(path, follow_symlinks=False)
         descriptor, _record = self._parent_record(path)
-        return os.stat(os.path.basename(path), dir_fd=descriptor, follow_symlinks=False)
+        flags = os.O_RDONLY | os.O_NOFOLLOW
+        file_descriptor = os.open(
+            os.path.basename(path), flags, dir_fd=descriptor
+        )
+        try:
+            return os.fstat(file_descriptor)
+        finally:
+            os.close(file_descriptor)
 
     def exists(self, path: str) -> bool:
         try:
@@ -913,21 +1047,18 @@ class _DirectoryAnchors:
 
     def atomic_link(self, source: str, target: str) -> None:
         if os.name == "nt":
-            os.link(source, target)
+            _link_at(source, target)
             return
         source_fd, _record = self._parent_record(source)
         target_fd, _record = self._parent_record(target)
-        os.link(
-            os.path.basename(source), os.path.basename(target),
-            src_dir_fd=source_fd, dst_dir_fd=target_fd, follow_symlinks=False,
-        )
+        _link_at(source, target, source_fd, target_fd)
 
     def unlink(self, path: str) -> None:
         if os.name == "nt":
-            os.unlink(path)
+            _unlink_at(path)
             return
         parent_fd, _record = self._parent_record(path)
-        os.unlink(os.path.basename(path), dir_fd=parent_fd)
+        _unlink_at(path, parent_fd)
 
     def _delete_created_directory_bound(self, path: str) -> bool:
         """Delete one empty Windows directory through its retained handle."""
@@ -1171,8 +1302,6 @@ def _contained_target(root: str, relative: str) -> str:
     if os.path.lexists(root_abs):
         if os.path.islink(root_abs) or not os.path.isdir(root_abs):
             raise RestoreRefusal("metadata root is not a safe directory")
-        if os.path.normcase(os.path.realpath(root_abs)) != os.path.normcase(root_abs):
-            raise RestoreRefusal("metadata root redirects to another path")
     try:
         if os.path.commonpath((root_abs, target)) != root_abs:
             raise RestoreRefusal("restore target escapes the metadata root")
@@ -1316,8 +1445,14 @@ def _ensure_parent(
         current = next_current
     if os.path.islink(current) or not os.path.isdir(current):
         raise RestoreFailure("target parent is not a safe directory")
-    if os.path.normcase(os.path.realpath(current)) != os.path.normcase(os.path.abspath(current)):
-        raise RestoreFailure("target parent redirects to another path")
+    try:
+        if os.path.commonpath((
+            os.path.realpath(root_abs),
+            os.path.realpath(current),
+        )) != os.path.realpath(root_abs):
+            raise RestoreFailure("target parent redirects to another path")
+    except ValueError as exc:
+        raise RestoreFailure("target parent is on another filesystem root") from exc
     try:
         if os.path.commonpath((root_abs, os.path.abspath(parent))) != root_abs:
             raise RestoreFailure("target parent escapes the metadata root")

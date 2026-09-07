@@ -5,10 +5,12 @@ Problem: atexit handlers do not run when a process is forcibly killed
 (for example, Windows Task Scheduler timeout or power loss). This leaves
 stale lock files that block all future runs.
 
-Solution: publish a directory containing the PID as one atomic rename. On
-startup, if a lock exists, check whether that PID is still running. If the
-process is gone, the lock is stale -- remove it and continue. Only block if
-the process is still alive or its owner cannot be verified.
+Solution: claim a directory with one atomic mkdir, then write the PID into
+that directory. On startup, if a lock exists, check whether that PID is still
+running. If the process is gone, the lock is stale -- remove it and continue.
+Only block if the process is still alive or its owner cannot be verified. A
+lock directory without a readable PID is intentionally treated as unknown
+and blocks fail-closed.
 
 Usage:
     from lock_utils import acquire_lock, release_lock
@@ -91,35 +93,26 @@ def acquire_lock(lock_file, script_name):
     """
     os.makedirs(os.path.dirname(os.path.abspath(lock_file)), exist_ok=True)
     while True:
-        temporary_lock = "{}.new.{}".format(lock_file, uuid.uuid4().hex)
         try:
-            os.mkdir(temporary_lock)
-            with open(os.path.join(temporary_lock, "pid"), "w", encoding="utf-8") as handle:
+            # mkdir is the no-replace operation on every supported platform.
+            # Publishing a temporary directory and renaming it is unsafe on
+            # POSIX systems because rename(2) can replace an empty directory.
+            os.mkdir(lock_file)
+            with open(os.path.join(lock_file, "pid"), "w", encoding="utf-8") as handle:
                 handle.write(str(os.getpid()))
-            os.rename(temporary_lock, lock_file)
         except FileExistsError:
-            # Windows reports an existing destination as FileExistsError.
             # Keep the collision path below for the existing-lock check.
             pass
         except OSError as exc:
-            # On macOS, replacing a non-empty directory with rename(2) raises
-            # ENOTEMPTY rather than FileExistsError.  It is the same
-            # destination-lock collision and must not escape as a test/runtime
-            # failure.  Preserve fail-fast behaviour for unrelated errors.
+            # Some filesystems report an existing directory as ENOTEMPTY
+            # rather than FileExistsError.  Treat both as a collision and
+            # preserve fail-fast behaviour for unrelated errors.
             if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY):
-                try:
-                    _remove_lock_tree(temporary_lock)
-                except FileNotFoundError:
-                    pass
                 raise
 
         else:
             return
 
-        try:
-            _remove_lock_tree(temporary_lock)
-        except FileNotFoundError:
-            pass
         if not os.path.exists(lock_file):
             continue
 

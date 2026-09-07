@@ -123,6 +123,8 @@ def run_fixture(fixture_dir):
                         expected_dry_exit, r_dry.returncode
                     )
                 )
+                if r_dry.stdout:
+                    print("    stdout: {}".format(r_dry.stdout[:1000]))
                 if r_dry.stderr:
                     print("    stderr: {}".format(r_dry.stderr[:300]))
                 return False

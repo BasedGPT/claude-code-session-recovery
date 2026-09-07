@@ -1302,8 +1302,6 @@ def _contained_target(root: str, relative: str) -> str:
     if os.path.lexists(root_abs):
         if os.path.islink(root_abs) or not os.path.isdir(root_abs):
             raise RestoreRefusal("metadata root is not a safe directory")
-        if os.path.normcase(os.path.realpath(root_abs)) != os.path.normcase(root_abs):
-            raise RestoreRefusal("metadata root redirects to another path")
     try:
         if os.path.commonpath((root_abs, target)) != root_abs:
             raise RestoreRefusal("restore target escapes the metadata root")
@@ -1447,8 +1445,14 @@ def _ensure_parent(
         current = next_current
     if os.path.islink(current) or not os.path.isdir(current):
         raise RestoreFailure("target parent is not a safe directory")
-    if os.path.normcase(os.path.realpath(current)) != os.path.normcase(os.path.abspath(current)):
-        raise RestoreFailure("target parent redirects to another path")
+    try:
+        if os.path.commonpath((
+            os.path.realpath(root_abs),
+            os.path.realpath(current),
+        )) != os.path.realpath(root_abs):
+            raise RestoreFailure("target parent redirects to another path")
+    except ValueError as exc:
+        raise RestoreFailure("target parent is on another filesystem root") from exc
     try:
         if os.path.commonpath((root_abs, os.path.abspath(parent))) != root_abs:
             raise RestoreFailure("target parent escapes the metadata root")

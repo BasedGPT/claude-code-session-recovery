@@ -1,7 +1,9 @@
 """Privacy controls for diagnostic and recovery output."""
 
+import ntpath
 import os
 import sys
+from types import SimpleNamespace
 
 
 TOOLS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools")
@@ -16,9 +18,24 @@ import find_missing_jsonls_in_backup as backup_search
 import worktree_shrink
 
 
-def test_redact_user_home(monkeypatch):
-    monkeypatch.setattr(diagnose.os.path, "expanduser", lambda _value: r"C:\Users\PrivateName")
+def _patch_windows_redaction(monkeypatch):
+    windows_path = SimpleNamespace(
+        abspath=ntpath.abspath,
+        expanduser=lambda _value: r"C:\Users\PrivateName",
+        normcase=ntpath.normcase,
+        normpath=ntpath.normpath,
+    )
+    # The production code uses os.path plus os.sep.  Use an isolated proxy so
+    # these Windows-path tests do not mutate the process-wide os.path module on
+    # a macOS runner.
+    monkeypatch.setattr(
+        diagnose, "os", SimpleNamespace(path=windows_path, sep=ntpath.sep)
+    )
     monkeypatch.setattr(diagnose.platform, "system", lambda: "Windows")
+
+
+def test_redact_user_home(monkeypatch):
+    _patch_windows_redaction(monkeypatch)
 
     result = diagnose._redact_user_home(
         r"C:\Users\PrivateName\AppData\Local\Packages\Claude_example"
@@ -29,8 +46,7 @@ def test_redact_user_home(monkeypatch):
 
 
 def test_redact_snapshot_removes_home_paths_recursively(monkeypatch):
-    monkeypatch.setattr(diagnose.os.path, "expanduser", lambda _value: r"C:\Users\PrivateName")
-    monkeypatch.setattr(diagnose.platform, "system", lambda: "Windows")
+    _patch_windows_redaction(monkeypatch)
 
     result = diagnose._redact_snapshot(
         {

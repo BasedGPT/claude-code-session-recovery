@@ -753,9 +753,9 @@ class _DirectoryAnchors:
                         handle, record = _windows_directory_record(path)
                     self.records[key] = (handle, record)
             else:
-                required = all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW"))
+                nofollow_flag = getattr(os, "O_NOFOLLOW", None)
                 if (
-                    not required
+                    nofollow_flag is None
                     or os.link not in os.supports_dir_fd
                     or os.unlink not in os.supports_dir_fd
                     or os.stat not in os.supports_dir_fd
@@ -763,7 +763,12 @@ class _DirectoryAnchors:
                     raise RestoreRefusal(
                         "platform cannot anchor destination directories safely"
                     )
-                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                # O_DIRECTORY is not exposed by every POSIX Python build.
+                # fstat() below still verifies that each retained descriptor
+                # is a directory, while O_NOFOLLOW protects the final path
+                # component from symlink substitution.
+                directory_flag = getattr(os, "O_DIRECTORY", 0)
+                flags = os.O_RDONLY | directory_flag | nofollow_flag
                 for path in self.paths:
                     if _normal_path(path) == _normal_path(self.sessions_root):
                         descriptor = os.open(path, flags)

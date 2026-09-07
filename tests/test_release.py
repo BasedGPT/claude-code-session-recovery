@@ -94,6 +94,37 @@ class ReleasePolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(release.ReleasePolicyError, "must be annotated"):
                 release.check_transition(root, base, head)
 
+    def test_transition_accepts_tag_on_unchanged_merge_parent(self) -> None:
+        temporary, root = self._repo()
+        with temporary:
+            self._write_release(root, "1.0.0", tool_text="print('baseline')\n")
+            initial = self._commit(root, "initial release tree")
+            self._git(root, "checkout", "-q", "-b", "tagged-side", initial)
+            self._git(root, "commit", "--allow-empty", "-q", "-m", "tag metadata")
+            self._git(root, "tag", "-a", "v1.0.0", "-m", "Release v1.0.0")
+            self._git(root, "checkout", "-q", "-b", "merge-base", initial)
+            self._git(root, "commit", "--allow-empty", "-q", "-m", "merge metadata")
+            self._git(
+                root,
+                "merge",
+                "--no-ff",
+                "-s",
+                "ours",
+                "-q",
+                "-m",
+                "merge unchanged release tree",
+                "tagged-side",
+            )
+            base = self._git(root, "rev-parse", "HEAD")
+
+            self._write_release(root, "1.0.1", tool_text="print('changed')\n")
+            head = self._commit(root, "next release")
+
+            result = release.check_transition(root, base, head)
+
+            self.assertEqual(result.base_version, "1.0.0")
+            self.assertEqual(result.head_version, "1.0.1")
+
     def test_tag_check_rejects_lightweight_tag_and_accepts_annotated_tag(self) -> None:
         temporary, root = self._repo()
         with temporary:

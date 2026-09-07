@@ -34,15 +34,15 @@ class LockUtilsTests(unittest.TestCase):
             lock_path = os.path.join(root, "job.lock")
             lock_utils.acquire_lock(lock_path, "first")
 
-            original_rename = lock_utils.os.rename
+            original_mkdir = lock_utils.os.mkdir
 
-            def raise_directory_collision(source, destination):
-                if destination == lock_path:
+            def raise_directory_collision(path, *args, **kwargs):
+                if path == lock_path:
                     raise OSError(errno.ENOTEMPTY, "Directory not empty")
-                return original_rename(source, destination)
+                return original_mkdir(path, *args, **kwargs)
 
             with mock.patch.object(
-                lock_utils.os, "rename", side_effect=raise_directory_collision
+                lock_utils.os, "mkdir", side_effect=raise_directory_collision
             ):
                 with self.assertRaises(SystemExit):
                     lock_utils.acquire_lock(lock_path, "second")

@@ -756,9 +756,9 @@ class _DirectoryAnchors:
                 nofollow_flag = getattr(os, "O_NOFOLLOW", None)
                 if (
                     nofollow_flag is None
+                    or os.open not in os.supports_dir_fd
                     or os.link not in os.supports_dir_fd
                     or os.unlink not in os.supports_dir_fd
-                    or os.stat not in os.supports_dir_fd
                 ):
                     raise RestoreRefusal(
                         "platform cannot anchor destination directories safely"
@@ -770,18 +770,7 @@ class _DirectoryAnchors:
                 directory_flag = getattr(os, "O_DIRECTORY", 0)
                 flags = os.O_RDONLY | directory_flag | nofollow_flag
                 for path in self.paths:
-                    if _normal_path(path) == _normal_path(self.sessions_root):
-                        descriptor = os.open(path, flags)
-                    else:
-                        parent_key = _normal_path(os.path.dirname(path))
-                        if parent_key not in self.records:
-                            raise RestoreRefusal(
-                                "destination anchor chain is incomplete"
-                            )
-                        parent_fd, _parent_record = self.records[parent_key]
-                        descriptor = os.open(
-                            os.path.basename(path), flags, dir_fd=parent_fd
-                        )
+                    descriptor = self._open_directory(path, flags)
                     result = os.fstat(descriptor)
                     if not stat_module.S_ISDIR(result.st_mode):
                         os.close(descriptor)
@@ -804,6 +793,16 @@ class _DirectoryAnchors:
             except OSError:
                 pass
         self.records.clear()
+
+    def _open_directory(self, path: str, flags: int) -> int:
+        """Open one anchored directory through its retained parent descriptor."""
+        if _normal_path(path) == _normal_path(self.sessions_root):
+            return os.open(path, flags)
+        parent_key = _normal_path(os.path.dirname(path))
+        if parent_key not in self.records:
+            raise RestoreRefusal("destination anchor chain is incomplete")
+        parent_fd, _parent_record = self.records[parent_key]
+        return os.open(os.path.basename(path), flags, dir_fd=parent_fd)
 
     def verify(self) -> None:
         root_key = _normal_path(self.sessions_root)
@@ -840,10 +839,19 @@ class _DirectoryAnchors:
                 del held
             else:
                 held_stat = os.fstat(held)
-                path_stat = os.stat(path, follow_symlinks=False)
+                flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+                try:
+                    probe = self._open_directory(path, flags)
+                except OSError as exc:
+                    raise RestoreRefusal(
+                        "destination directory anchor cannot be revalidated"
+                    ) from exc
+                try:
+                    path_stat = os.fstat(probe)
+                finally:
+                    os.close(probe)
                 if (
-                    stat_module.S_ISLNK(path_stat.st_mode)
-                    or not stat_module.S_ISDIR(path_stat.st_mode)
+                    not stat_module.S_ISDIR(path_stat.st_mode)
                     or (held_stat.st_dev, held_stat.st_ino, held_stat.st_mode) != expected
                     or (path_stat.st_dev, path_stat.st_ino) != (held_stat.st_dev, held_stat.st_ino)
                 ):
@@ -859,7 +867,14 @@ class _DirectoryAnchors:
         if os.name == "nt":
             return os.stat(path, follow_symlinks=False)
         descriptor, _record = self._parent_record(path)
-        return os.stat(os.path.basename(path), dir_fd=descriptor, follow_symlinks=False)
+        flags = os.O_RDONLY | os.O_NOFOLLOW
+        file_descriptor = os.open(
+            os.path.basename(path), flags, dir_fd=descriptor
+        )
+        try:
+            return os.fstat(file_descriptor)
+        finally:
+            os.close(file_descriptor)
 
     def exists(self, path: str) -> bool:
         try:

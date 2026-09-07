@@ -981,12 +981,15 @@ class _DirectoryAnchors:
         if os.name == "nt":
             return os.stat(path, follow_symlinks=False)
         descriptor, _record = self._parent_record(path)
-        flags = os.O_RDONLY | os.O_NOFOLLOW
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
         file_descriptor = os.open(
             os.path.basename(path), flags, dir_fd=descriptor
         )
         try:
-            return os.fstat(file_descriptor)
+            result = os.fstat(file_descriptor)
+            if not stat_module.S_ISREG(result.st_mode):
+                raise RestoreRefusal("anchored file is not regular")
+            return result
         finally:
             os.close(file_descriptor)
 
@@ -1004,7 +1007,7 @@ class _DirectoryAnchors:
                 raise RestoreRefusal("anchored file is not regular")
             return _sha256_file(path)
         parent_fd, _record = self._parent_record(path)
-        flags = os.O_RDONLY | os.O_NOFOLLOW
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
         descriptor = os.open(os.path.basename(path), flags, dir_fd=parent_fd)
         try:
             result = os.fstat(descriptor)

@@ -52,6 +52,7 @@ Both commands are read-only.
 ## GitHub repository settings
 
 The repository ruleset must require pull requests and the `version-policy`,
-`fixtures`, and `lint` checks before `main` can advance. It must deny
+`fixtures (windows-latest)`, `fixtures (macos-latest)`, and `lint` checks before
+`main` can advance. It must deny
 force-pushes to `main` and updates/deletions of `v*` tags. The release workflow
 only needs read access because releases are represented by the protected tag.

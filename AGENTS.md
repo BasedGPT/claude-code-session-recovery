@@ -104,3 +104,10 @@ the resolved paths and retains the repair policy.
 ---
 
 *Maintainer: [@BasedGPT](https://github.com/BasedGPT)*
+
+## Session liveness
+
+Transcript age, branch age, lack of recent writes, and zero commits ahead do
+not establish that a session is dead. Use the toolkit's current diagnostic and
+worktree-inspection output; ambiguous liveness means skip. An explicitly named
+session still requires the repair safety gates above.

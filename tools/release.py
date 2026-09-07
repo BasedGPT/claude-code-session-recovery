@@ -106,22 +106,6 @@ def resolve_commit(root: Path, ref: str) -> str:
     return commit
 
 
-def _tree_id(root: Path, ref: str) -> str:
-    """Resolve the tree object for a commit ref."""
-    tree = _git_text(root, "rev-parse", f"{_validate_ref(ref)}^{{tree}}").strip()
-    if not COMMIT_RE.fullmatch(tree):
-        raise ReleasePolicyError(f"Git returned an invalid tree for {ref!r}")
-    return tree
-
-
-def _is_noop_merge_parent(root: Path, tag_commit: str, ref_commit: str) -> bool:
-    """Allow a tag on a direct parent of an unchanged merge commit only."""
-    parents = _git_text(root, "rev-list", "--parents", "-n", "1", ref_commit).split()
-    if len(parents) < 3 or tag_commit not in parents[1:]:
-        return False
-    return _tree_id(root, tag_commit) == _tree_id(root, ref_commit)
-
-
 def _read_blob(root: Path, ref: str, path: str) -> bytes | None:
     """Read a committed blob, returning None only when the path is absent."""
     ref = _validate_ref(ref)
@@ -178,10 +162,8 @@ def check_tag(
     root: Path,
     tag: str,
     ref: str = "HEAD",
-    *,
-    allow_noop_merge_parent: bool = False,
 ) -> TagCheck:
-    """Require an annotated release tag to identify the checked-out tree."""
+    """Require an annotated release tag to identify the exact commit."""
     tag = _validate_ref(tag)
     ref = _validate_ref(ref)
     tag_match = TAG_RE.fullmatch(tag)
@@ -198,9 +180,7 @@ def check_tag(
     if tag_type != "tag":
         raise ReleasePolicyError(f"release tag {tag} must be annotated, not {tag_type}")
     tag_commit = resolve_commit(root, tag)
-    if tag_commit != ref_commit and not (
-        allow_noop_merge_parent and _is_noop_merge_parent(root, tag_commit, ref_commit)
-    ):
+    if tag_commit != ref_commit:
         raise ReleasePolicyError(
             f"release tag {tag} points to {tag_commit}, expected {ref_commit}"
         )
@@ -235,7 +215,6 @@ def check_transition(root: Path, base: str, head: str = "HEAD") -> TransitionChe
             root,
             f"v{base_version}",
             base,
-            allow_noop_merge_parent=True,
         )
     return TransitionCheck(
         base_commit=base_commit,

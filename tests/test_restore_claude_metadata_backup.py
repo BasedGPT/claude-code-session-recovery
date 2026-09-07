@@ -1375,7 +1375,7 @@ def test_destination_parent_swap_inside_create_cannot_escape_and_rolls_back(
     displaced = tmp_path / "displaced-pair"
     outside = tmp_path / "outside"
     outside.mkdir()
-    real_link = os.link
+    real_link = restore._link_at
 
     def swap_parent_inside_create(source, destination, *args, **kwargs):
         if os.name == "nt":
@@ -1388,13 +1388,47 @@ def test_destination_parent_swap_inside_create_cannot_escape_and_rolls_back(
             raise AssertionError("Windows directory anchor allowed parent rename")
         os.rename(pair, displaced)
         os.symlink(outside, pair, target_is_directory=True)
-        return real_link(source, destination)
+        return real_link(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(restore, "_link_at", swap_parent_inside_create)
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
 
     assert _run(state, archive, "--apply") != 0
     assert not (outside / "local_one.json").exists()
-    assert not (displaced / "local_one.json").exists()
+    if os.name == "nt":
+        assert not (displaced / "local_one.json").exists()
+    else:
+        assert (displaced / "local_one.json").read_bytes() == b'{"sessionId":"one"}\n'
+        assert list(displaced.glob(".r-*")) == []
     assert not (pair / "local_one.json").exists()
     assert list(state.rglob(".r-*")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO semantics")
+@pytest.mark.parametrize("operation", ["stat_file", "hash_file"])
+def test_anchored_fifo_refuses_without_waiting_for_writer(tmp_path, operation):
+    import subprocess
+
+    fifo = tmp_path / "target"
+    os.mkfifo(fifo)
+    code = """
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import restore_claude_metadata_backup as restore
+parent = sys.argv[2]
+fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+anchors = restore._DirectoryAnchors.__new__(restore._DirectoryAnchors)
+anchors.records = {restore._normal_path(parent): (fd, None)}
+try:
+    getattr(anchors, sys.argv[3])(os.path.join(parent, 'target'))
+except restore.RestoreRefusal:
+    pass
+else:
+    raise AssertionError('FIFO was accepted')
+finally:
+    os.close(fd)
+"""
+    subprocess.run(
+        [sys.executable, "-c", code, str(SESSIONS), str(tmp_path), operation],
+        check=True, capture_output=True, text=True, timeout=10,
+    )

@@ -90,6 +90,109 @@ class RestoreFailure(RuntimeError):
     """Staging or publication failed after the restore plan was accepted."""
 
 
+def _posix_at_available(name: str) -> bool:
+    """Return whether the host libc exposes one of the required *at calls."""
+    try:
+        import ctypes
+
+        getattr(ctypes.CDLL(None), name)
+    except (AttributeError, OSError):
+        return False
+    return True
+
+
+def _posix_link_at(source_fd: int, source: str, target_fd: int, target: str) -> None:
+    """Create a hard link through libc when Python lacks linkat support."""
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        linkat = libc.linkat
+    except (AttributeError, OSError) as exc:
+        raise RestoreRefusal("platform lacks a safe descriptor-relative link operation") from exc
+    linkat.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+    ]
+    linkat.restype = ctypes.c_int
+    result = linkat(
+        source_fd,
+        os.fsencode(source),
+        target_fd,
+        os.fsencode(target),
+        0,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), source, target)
+
+
+def _posix_unlink_at(parent_fd: int, name: str) -> None:
+    """Unlink through libc when Python lacks unlinkat support."""
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        unlinkat = libc.unlinkat
+    except (AttributeError, OSError) as exc:
+        raise RestoreRefusal("platform lacks a safe descriptor-relative unlink operation") from exc
+    unlinkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    unlinkat.restype = ctypes.c_int
+    result = unlinkat(parent_fd, os.fsencode(name), 0)
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), name)
+
+
+def _link_at(
+    source: str,
+    target: str,
+    source_fd: int | None = None,
+    target_fd: int | None = None,
+) -> None:
+    """Create a link while keeping the destination directory descriptor-bound."""
+    if os.name == "nt":
+        os.link(source, target)
+        return
+    source_name = os.path.basename(source)
+    target_name = os.path.basename(target)
+    if source_fd is None or target_fd is None:
+        raise RestoreRefusal("descriptor-relative link requires directory anchors")
+    try:
+        if os.link in os.supports_dir_fd:
+            os.link(
+                source_name,
+                target_name,
+                src_dir_fd=source_fd,
+                dst_dir_fd=target_fd,
+                follow_symlinks=False,
+            )
+            return
+    except NotImplementedError:
+        pass
+    _posix_link_at(source_fd, source_name, target_fd, target_name)
+
+
+def _unlink_at(path: str, parent_fd: int | None = None) -> None:
+    """Unlink while keeping the parent directory descriptor-bound."""
+    if os.name == "nt":
+        os.unlink(path)
+        return
+    if parent_fd is None:
+        raise RestoreRefusal("descriptor-relative unlink requires directory anchors")
+    name = os.path.basename(path)
+    try:
+        if os.unlink in os.supports_dir_fd:
+            os.unlink(name, dir_fd=parent_fd)
+            return
+    except NotImplementedError:
+        pass
+    _posix_unlink_at(parent_fd, name)
+
+
 @dataclass(frozen=True)
 class RestoreEntry:
     archive_path: str
@@ -757,8 +860,14 @@ class _DirectoryAnchors:
                 if (
                     nofollow_flag is None
                     or os.open not in os.supports_dir_fd
-                    or os.link not in os.supports_dir_fd
-                    or os.unlink not in os.supports_dir_fd
+                    or not (
+                        os.link in os.supports_dir_fd
+                        or _posix_at_available("linkat")
+                    )
+                    or not (
+                        os.unlink in os.supports_dir_fd
+                        or _posix_at_available("unlinkat")
+                    )
                 ):
                     raise RestoreRefusal(
                         "platform cannot anchor destination directories safely"
@@ -933,21 +1042,18 @@ class _DirectoryAnchors:
 
     def atomic_link(self, source: str, target: str) -> None:
         if os.name == "nt":
-            os.link(source, target)
+            _link_at(source, target)
             return
         source_fd, _record = self._parent_record(source)
         target_fd, _record = self._parent_record(target)
-        os.link(
-            os.path.basename(source), os.path.basename(target),
-            src_dir_fd=source_fd, dst_dir_fd=target_fd, follow_symlinks=False,
-        )
+        _link_at(source, target, source_fd, target_fd)
 
     def unlink(self, path: str) -> None:
         if os.name == "nt":
-            os.unlink(path)
+            _unlink_at(path)
             return
         parent_fd, _record = self._parent_record(path)
-        os.unlink(os.path.basename(path), dir_fd=parent_fd)
+        _unlink_at(path, parent_fd)
 
     def _delete_created_directory_bound(self, path: str) -> bool:
         """Delete one empty Windows directory through its retained handle."""

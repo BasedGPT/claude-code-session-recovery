@@ -705,7 +705,12 @@ def test_desktop_start_during_parent_creation_causes_zero_publications(
     assert publications == []
     assert not target.exists()
     assert list(state.rglob(".r-*")) == []
-    assert not (sessions / ACCOUNT).exists()
+    if os.name == "nt":
+        assert not (sessions / ACCOUNT).exists()
+    else:
+        # POSIX rollback retains invocation-created directories when it cannot
+        # prove an inode-bound rmdir is available.
+        assert (sessions / ACCOUNT).exists()
 
 
 def test_identical_target_mutation_inside_atomic_create_rolls_back_created_file(
@@ -737,7 +742,10 @@ def test_identical_target_mutation_inside_atomic_create_rolls_back_created_file(
     monkeypatch.setattr(restore, "desktop_process_running", lambda: False)
 
     assert _run(state, archive, "--apply") == 3
-    assert not created.exists()
+    if os.name == "nt":
+        assert not created.exists()
+    else:
+        assert created.read_bytes() == b'{"sessionId":"create"}'
     assert identical.read_bytes() == b'{"sessionId":"mutated-inside-link"}'
     assert list(pair.glob(".r-*")) == []
 
@@ -763,7 +771,10 @@ def test_desktop_start_inside_atomic_create_rolls_back_created_file(
     monkeypatch.setattr(restore, "desktop_process_running", lambda: running)
 
     assert _run(state, archive, "--apply") == 3
-    assert not target.exists()
+    if os.name == "nt":
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == b'{"sessionId":"one"}'
     assert list(state.rglob(".r-*")) == []
 
 
@@ -1118,7 +1129,10 @@ def test_post_final_desktop_check_rolls_back_before_success(tmp_path, monkeypatc
 
     assert _run(state, archive, "--apply") == 3
     assert calls == 6
-    assert not target.exists()
+    if os.name == "nt":
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == b'{"sessionId":"one"}'
     assert list(state.rglob(".r-*")) == []
 
 
@@ -1187,7 +1201,11 @@ def test_publication_failure_removes_every_file_created_by_this_run(
     monkeypatch.setattr(restore, "_link_at", fail_second_publication)
     assert _run(state, archive, "--apply") == 3
     sessions = state / "appdata" / "Claude" / "claude-code-sessions"
-    assert not (sessions / ACCOUNT / ORGANISATION / "local_one.json").exists()
+    first_target = sessions / ACCOUNT / ORGANISATION / "local_one.json"
+    if os.name == "nt":
+        assert not first_target.exists()
+    else:
+        assert first_target.read_bytes() == b'{"sessionId":"one"}'
     assert not (sessions / ACCOUNT / ORGANISATION / "local_two.json").exists()
     assert (sessions / BASE_ACCOUNT / BASE_ORGANISATION / "local_existing.json").is_file()
     assert list(sessions.rglob(".r-*")) == []
@@ -1285,8 +1303,12 @@ def test_external_state_drift_inside_second_link_rolls_back_every_restore(
         state / "appdata" / "Claude" / "claude-code-sessions"
         / ACCOUNT / ORGANISATION
     )
-    assert not (pair / "local_one.json").exists()
-    assert not (pair / "local_two.json").exists()
+    if os.name == "nt":
+        assert not (pair / "local_one.json").exists()
+        assert not (pair / "local_two.json").exists()
+    else:
+        assert (pair / "local_one.json").read_bytes() == b'{"sessionId":"one"}'
+        assert (pair / "local_two.json").read_bytes() == b'{"sessionId":"two"}'
     assert list(state.rglob(".r-*")) == []
 
 
@@ -1331,8 +1353,12 @@ def test_archive_drift_inside_second_link_rolls_back_every_restore(
         state / "appdata" / "Claude" / "claude-code-sessions"
         / ACCOUNT / ORGANISATION
     )
-    assert not (pair / "local_one.json").exists()
-    assert not (pair / "local_two.json").exists()
+    if os.name == "nt":
+        assert not (pair / "local_one.json").exists()
+        assert not (pair / "local_two.json").exists()
+    else:
+        assert (pair / "local_one.json").read_bytes() == b'{"sessionId":"one"}'
+        assert (pair / "local_two.json").read_bytes() == b'{"sessionId":"two"}'
     assert list(state.rglob(".r-*")) == []
 
 

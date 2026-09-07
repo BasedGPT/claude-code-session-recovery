@@ -857,20 +857,25 @@ class _DirectoryAnchors:
                     self.records[key] = (handle, record)
             else:
                 nofollow_flag = getattr(os, "O_NOFOLLOW", None)
-                if (
-                    nofollow_flag is None
-                    or os.open not in os.supports_dir_fd
-                    or not (
-                        os.link in os.supports_dir_fd
-                        or _posix_at_available("linkat")
-                    )
-                    or not (
-                        os.unlink in os.supports_dir_fd
-                        or _posix_at_available("unlinkat")
-                    )
+                missing = []
+                if nofollow_flag is None:
+                    missing.append("O_NOFOLLOW")
+                if os.open not in os.supports_dir_fd:
+                    missing.append("openat")
+                if not (
+                    os.link in os.supports_dir_fd
+                    or _posix_at_available("linkat")
                 ):
+                    missing.append("linkat")
+                if not (
+                    os.unlink in os.supports_dir_fd
+                    or _posix_at_available("unlinkat")
+                ):
+                    missing.append("unlinkat")
+                if missing:
                     raise RestoreRefusal(
-                        "platform cannot anchor destination directories safely"
+                        "platform cannot anchor destination directories safely "
+                        "(missing {})".format(", ".join(missing))
                     )
                 # O_DIRECTORY is not exposed by every POSIX Python build.
                 # fstat() below still verifies that each retained descriptor

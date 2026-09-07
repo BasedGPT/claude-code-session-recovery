@@ -774,7 +774,7 @@ def test_desktop_start_inside_atomic_create_rolls_back_created_file(
     if os.name == "nt":
         assert not target.exists()
     else:
-        assert target.read_bytes() == b'{"sessionId":"one"}'
+        assert target.read_bytes() == b'{"sessionId":"one"}\n'
     assert list(state.rglob(".r-*")) == []
 
 
@@ -1132,7 +1132,7 @@ def test_post_final_desktop_check_rolls_back_before_success(tmp_path, monkeypatc
     if os.name == "nt":
         assert not target.exists()
     else:
-        assert target.read_bytes() == b'{"sessionId":"one"}'
+        assert target.read_bytes() == b'{"sessionId":"one"}\n'
     assert list(state.rglob(".r-*")) == []
 
 

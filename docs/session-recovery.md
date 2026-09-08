@@ -178,6 +178,42 @@ PROBLEM FOUND: One project shows two sets of sessions in the session list
 
 ---
 
+<a id="ancestor-volume-mount-path-alias"></a>
+## Intact transcripts under one Windows path form while the reader uses another
+
+**What you see.** The VS Code Claude Code output shows an original path and a
+different resolved path, while the CLI can still resume by an explicit session
+ID. The project history is present under one project slug but the extension's
+session list is empty because it is looking under another slug.
+
+**How to check it.** Copy the two observed path strings from the relevant
+output and run the read-only diagnostic:
+
+```
+python tools/diagnose.py --cwd "d:\CustomTools\dev\claude" --resolved-cwd "C:\D-Data\CustomTools\dev\claude" --json
+```
+
+`--cwd` is the writer or metadata path. `--resolved-cwd` is the reader path
+observed in the VS Code log. The diagnostic compares the two literal slug
+forms and counts direct `.jsonl` files in each matching `~/.claude/projects/`
+directory. A result such as `observed_slug_mismatch_candidate` means files are
+present under the original slug and absent from the resolved slug. It is a
+candidate path-alias observation, not proof that both strings identify the same
+physical directory or proof of a particular resolver implementation.
+
+The `ancestor-volume-mount-candidate` label is used when the observed Windows
+paths have different drive roots and share the original path suffix. This is
+consistent with the verified `D:\` volume mounted below `C:\D-Data\` report,
+but the diagnostic does not enumerate mounts or call Python `realpath` to
+stand in for VS Code's resolver. It only reports the supplied observations and
+the on-disk JSONL filename counts.
+
+No move, rewrite, rebind, or repair command is selected by this check. Keep
+both slug directories until the path relationship and transcript contents have
+been reviewed separately; JSONL presence here is not a content-integrity check.
+
+---
+
 <a id="truncated-jsonl"></a>
 
 ## Session opens but its conversation history is shorter than expected

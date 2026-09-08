@@ -126,6 +126,33 @@ entire live DB/WAL/SHM set once more against the original pre-copy identities.
 This final gate catches source drift during snapshot inspection; a cache-key
 result is discarded unless both the post-copy and post-query comparisons match.
 
+The audit also checks the separate global VS Code database at the
+`globalStorage/state.vscdb` sibling of `workspaceStorage`. It queries the exact
+`Anthropic.claude-code` key documented by the VS Code extension and reads only
+the JSON object's `hiddenSessionIds` field. The value length is checked before
+fetching it and the fetched JSON and ID count are bounded by
+`--max-hidden-session-bytes` and `--max-hidden-session-ids`. The audit retains
+no session IDs. It compares opaque digests of the hidden IDs with opaque
+digests of local `.jsonl` filenames and reports only counts:
+
+- `hidden_transcripts_on_disk` means at least one hidden ID overlaps a local
+  transcript filename, which is structural evidence of deliberate global
+  hiding;
+- `hidden_ids_without_transcript_match` means the hidden list was observed but
+  none of its IDs matched a local transcript filename; and
+- `no_hidden_ids`, `global_key_absent`, or `global_database_absent` identify
+  the bounded absence cases.
+
+The overlap is evidence about the global filter only. `sessions-index.json`
+content remains unparsed, so a zero overlap does not classify a transcript as
+missing from that index. Missing global state is complete and distinct from an
+access or schema failure. Malformed JSON, an invalid `hiddenSessionIds` shape,
+an exceeded value/member cap, database errors, source drift, or any other
+partial scan suppress the overlap and listing interpretation and return exit
+code 2. The global database is opened only through the same temporary,
+read-only snapshot path; the live database, WAL, and SHM are never opened by
+SQLite and are never written, repaired, or unhidden.
+
 Only the stable temporary snapshot is opened with SQLite `mode=ro` and
 `PRAGMA query_only=ON`. The query targets the established key with an equality
 lookup, and a SQLite progress handler interrupts work at

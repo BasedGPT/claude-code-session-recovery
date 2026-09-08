@@ -21,9 +21,11 @@ Usage:
 """
 import argparse
 import json
+import ntpath
 import os
 import platform
 import re
+import stat
 import sys
 
 from session_state import (
@@ -91,6 +93,218 @@ def _shell_display_path(path):
     if platform.system() == "Darwin" and isinstance(redacted, str) and redacted.startswith("~"):
         return "$HOME" + redacted[1:]
     return redacted
+
+
+# ---------------------------------------------------------------------------
+# Explicit path-alias observation
+# ---------------------------------------------------------------------------
+
+def _looks_like_windows_path(path):
+    """Return whether *path* uses a Windows drive or UNC spelling."""
+    return isinstance(path, str) and bool(re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", path))
+
+
+def _windows_path_parts(path):
+    """Return case-folded non-root components for a Windows path."""
+    normalised = ntpath.normpath(path).replace("/", "\\")
+    drive, tail = ntpath.splitdrive(normalised)
+    del drive
+    return tuple(part.casefold() for part in tail.split("\\") if part)
+
+
+def _has_shared_windows_suffix(original_cwd, resolved_cwd):
+    """Return whether the resolved path retains the original path suffix."""
+    original_parts = _windows_path_parts(original_cwd)
+    resolved_parts = _windows_path_parts(resolved_cwd)
+    return bool(original_parts) and len(resolved_parts) >= len(original_parts) and (
+        resolved_parts[-len(original_parts):] == original_parts
+    )
+
+
+def _classify_observed_path_forms(original_cwd, resolved_cwd):
+    """Classify an observed path pair without asserting physical identity."""
+    if original_cwd == resolved_cwd:
+        return "same-path-form"
+    if not (_looks_like_windows_path(original_cwd) and _looks_like_windows_path(resolved_cwd)):
+        return "mixed-path-form"
+    original_drive = ntpath.splitdrive(original_cwd)[0].casefold()
+    resolved_drive = ntpath.splitdrive(resolved_cwd)[0].casefold()
+    if original_drive and resolved_drive and original_drive != resolved_drive:
+        if _has_shared_windows_suffix(original_cwd, resolved_cwd):
+            return "ancestor-volume-mount-candidate"
+    return "mixed-windows-path-form"
+
+
+def _entry_is_reparse_point(entry):
+    """Return whether a matching project directory is a link/reparse point."""
+    try:
+        if entry.is_symlink():
+            return True
+        attributes = getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0)
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400))
+    except OSError:
+        return True
+
+
+def _scan_project_slug(projects_dir, slug, *, case_insensitive=False):
+    """Count direct JSONL files in a case-insensitive slug directory.
+
+    The scan is deliberately limited to the two caller-supplied slugs.  It
+    does not follow directory links or read transcript contents.
+    """
+    result = {
+        "slug": slug_encode(_redact_user_home(slug)),
+        "directory_count": 0,
+        "jsonl_count": 0,
+        "reparse_point_count": 0,
+        "scan_status": "complete",
+    }
+    try:
+        with os.scandir(projects_dir) as iterator:
+            entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+    except OSError:
+        result["scan_status"] = "unavailable"
+        return result
+
+    requested_name = slug.casefold() if case_insensitive else slug
+    for entry in entries:
+        entry_name = entry.name.casefold() if case_insensitive else entry.name
+        if entry_name != requested_name:
+            continue
+        try:
+            if _entry_is_reparse_point(entry):
+                result["reparse_point_count"] += 1
+                result["scan_status"] = "reparse_point"
+                continue
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            result["scan_status"] = "partial"
+            continue
+        result["directory_count"] += 1
+        try:
+            children = os.scandir(entry.path)
+        except OSError:
+            result["scan_status"] = "partial"
+            continue
+        try:
+            with children:
+                for child in children:
+                    try:
+                        child_name = child.name.casefold() if case_insensitive else child.name
+                        if child.is_file(follow_symlinks=False) and child_name.endswith(".jsonl"):
+                            result["jsonl_count"] += 1
+                    except OSError:
+                        result["scan_status"] = "partial"
+        except OSError:
+            result["scan_status"] = "partial"
+    return result
+
+
+def build_path_alias_diagnostic(projects_dir, original_cwd=None, resolved_cwd=None):
+    """Build a read-only report from explicitly observed path strings.
+
+    ``original_cwd`` is the path reported by the writer/metadata side and
+    ``resolved_cwd`` is the path observed in the reader (for example, the
+    VS Code extension log).  The report compares their derived project slug
+    directories but never resolves either path or asserts that they identify
+    the same physical directory.
+    """
+    if not original_cwd or not resolved_cwd:
+        return {
+            "schema_version": "path-alias-diagnostic-v1",
+            "status": "invalid_input",
+            "physical_identity": "unverified",
+            "message": "Provide both --cwd and --resolved-cwd from observed output.",
+        }
+
+    original_slug = slug_encode(original_cwd)
+    resolved_slug = slug_encode(resolved_cwd)
+    windows_path_mode = (
+        _looks_like_windows_path(original_cwd)
+        and _looks_like_windows_path(resolved_cwd)
+    )
+    # The explicit path spelling is the authority for this comparison.  A
+    # POSIX fixture may be exercised on a Windows test host, where folding
+    # case would incorrectly merge two case-sensitive fixture directories.
+    case_insensitive = windows_path_mode
+    original = _scan_project_slug(
+        projects_dir, original_slug, case_insensitive=case_insensitive
+    )
+    resolved = _scan_project_slug(
+        projects_dir, resolved_slug, case_insensitive=case_insensitive
+    )
+    path_forms_differ = original_cwd != resolved_cwd
+    if case_insensitive:
+        slugs_differ = original_slug.casefold() != resolved_slug.casefold()
+    else:
+        slugs_differ = original_slug != resolved_slug
+    scan_complete = original["scan_status"] == resolved["scan_status"] == "complete"
+    source_has_jsonl = original["jsonl_count"] > 0 if scan_complete else None
+    reader_has_jsonl = resolved["jsonl_count"] > 0 if scan_complete else None
+    original["slug"] = slug_encode(_redact_user_home(original_cwd))
+    resolved["slug"] = slug_encode(_redact_user_home(resolved_cwd))
+
+    if not path_forms_differ:
+        status = "same_path_form"
+        message = "The observed paths are equivalent after Windows path normalisation."
+    elif not slugs_differ:
+        status = "path_forms_share_slug"
+        message = "The observed paths differ textually but derive the same project slug."
+    elif not scan_complete:
+        status = "insufficient_evidence"
+        message = "The compared project slug directories could not be scanned completely."
+    elif source_has_jsonl and not reader_has_jsonl:
+        status = "observed_slug_mismatch_candidate"
+        message = (
+            "JSONL files are present under the original slug while the resolved slug "
+            "has no JSONL files. This is compatible with a path alias mismatch."
+        )
+    elif source_has_jsonl and reader_has_jsonl:
+        status = "both_slugs_have_transcripts"
+        message = "Both derived slug directories contain JSONL files; a split is observed but not isolated."
+    elif reader_has_jsonl:
+        status = "resolved_slug_has_transcripts_only"
+        message = "JSONL files are present only under the resolved slug; the original slug has none."
+    else:
+        status = "no_transcripts_for_comparison"
+        message = "The compared slug directories contain no JSONL files to distinguish."
+
+    return {
+        "schema_version": "path-alias-diagnostic-v1",
+        "status": status,
+        "path_form_classification": _classify_observed_path_forms(original_cwd, resolved_cwd),
+        "physical_identity": "unverified",
+        "message": message,
+        "limitations": [
+            "Observed path forms do not prove that both paths identify the same physical location.",
+            "Python and VS Code resolver behaviour is not inferred from this report.",
+            "JSONL presence is checked by filename only; transcript content is not validated.",
+            "No move, rewrite, rebind, or repair command is selected.",
+        ],
+        "original": {
+            "cwd": original_cwd,
+            "slug": original["slug"],
+            "directory_count": original["directory_count"],
+            "jsonl_count": original["jsonl_count"],
+            "reparse_point_count": original["reparse_point_count"],
+            "scan_status": original["scan_status"],
+        },
+        "resolved": {
+            "cwd": resolved_cwd,
+            "slug": resolved["slug"],
+            "directory_count": resolved["directory_count"],
+            "jsonl_count": resolved["jsonl_count"],
+            "reparse_point_count": resolved["reparse_point_count"],
+            "scan_status": resolved["scan_status"],
+        },
+        "evidence": {
+            "path_forms_differ": path_forms_differ,
+            "slugs_differ": slugs_differ,
+            "original_jsonl_present": source_has_jsonl,
+            "resolved_jsonl_present": reader_has_jsonl,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +386,43 @@ def _suppress_ambiguous_synthesis_routes(matches, snapshot):
 # ---------------------------------------------------------------------------
 
 _SEP = "-" * 60
+
+
+def _format_path_alias(path_alias):
+    lines = []
+    lines.append("PATH ALIAS OBSERVATION:")
+    lines.append(f"  Status      : {path_alias['status']}")
+    if path_alias.get("path_form_classification"):
+        lines.append(
+            f"  Path forms  : {path_alias['path_form_classification']}"
+        )
+    original = path_alias.get("original", {})
+    resolved = path_alias.get("resolved", {})
+    if original.get("cwd"):
+        lines.append(f"  Original cwd: {_shell_display_path(original['cwd'])}")
+        lines.append(
+            "  Original slug: {} ({} JSONL file(s), scan={})".format(
+                original.get("slug"),
+                original.get("jsonl_count", 0),
+                original.get("scan_status", "unknown"),
+            )
+        )
+    if resolved.get("cwd"):
+        lines.append(f"  Resolved cwd: {_shell_display_path(resolved['cwd'])}")
+        lines.append(
+            "  Resolved slug: {} ({} JSONL file(s), scan={})".format(
+                resolved.get("slug"),
+                resolved.get("jsonl_count", 0),
+                resolved.get("scan_status", "unknown"),
+            )
+        )
+    if path_alias.get("message"):
+        lines.append(f"  Finding     : {path_alias['message']}")
+    lines.append("  Physical identity: not verified from these path strings.")
+    lines.append("  No repair, move, rewrite, or rebind is selected by this observation.")
+    lines.append("")
+
+    return "\n".join(lines)
 
 
 def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None,
@@ -364,6 +615,24 @@ def main():
         action="store_true",
         help="Emit machine-readable JSON output.",
     )
+    ap.add_argument(
+        "--cwd",
+        dest="path_alias_cwd",
+        metavar="PATH",
+        help=(
+            "Observed writer/metadata cwd for a read-only path-alias check. "
+            "Use with --resolved-cwd; values should come from the relevant logs."
+        ),
+    )
+    ap.add_argument(
+        "--resolved-cwd",
+        dest="path_alias_resolved_cwd",
+        metavar="PATH",
+        help=(
+            "Observed reader/VS Code cwd for a read-only path-alias check. "
+            "Use with --cwd; diagnose does not infer resolver behaviour."
+        ),
+    )
     args = ap.parse_args()
 
     # Resolve state directories
@@ -373,6 +642,21 @@ def main():
         projects_dir = os.path.join(state_abs, "projects")
     else:
         appdata_claude_dir, projects_dir = default_claude_paths()
+
+    # Explicit path observations are a separate audit, not authority for a repair.
+    if args.path_alias_cwd or args.path_alias_resolved_cwd:
+        path_alias = build_path_alias_diagnostic(
+            projects_dir, args.path_alias_cwd, args.path_alias_resolved_cwd,
+        )
+        if args.json_output:
+            print(json.dumps({
+                "audit_only": True,
+                "matched_problems": [],
+                "path_alias_diagnostic": _redact_snapshot(path_alias),
+            }, indent=2))
+        else:
+            print(_format_path_alias(path_alias))
+        return
 
     snapshot = build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=args.state is not None)
     diagnosis_id = make_diagnosis_id(snapshot)

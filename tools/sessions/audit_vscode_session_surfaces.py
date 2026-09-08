@@ -885,7 +885,6 @@ def main(argv=None):
     else:
         print("Claude sessions-index path: {}".format(projects_dir))
         print("VS Code workspaceStorage path: {}".format(workspace_dir))
-        print("VS Code global state DB path: {}".format(global_state_db))
         print("VS Code session surfaces audit: {}".format(result["status"]))
         print("Transcript-bearing slugs: {}".format(
             result["transcript_bearing_slug_count"]

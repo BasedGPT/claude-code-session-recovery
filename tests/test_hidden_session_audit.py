@@ -261,3 +261,20 @@ def test_global_hidden_ids_source_drift_discards_overlap(tmp_path, monkeypatch):
         error["code"] == "database_source_changed"
         for error in result["errors"]
     )
+
+
+def test_human_output_does_not_expose_global_database_path_or_ids(tmp_path, capsys):
+    projects, workspace, global_db = _audit_roots(
+        tmp_path,
+        {"hiddenSessionIds": ["private-hidden-session"]},
+        transcript_names=("private-hidden-session",),
+    )
+    assert audit.main([
+        "--projects-dir", str(projects),
+        "--workspace-dir", str(workspace),
+        "--global-state-db", str(global_db),
+    ]) == 0
+    rendered = capsys.readouterr().out
+    assert str(global_db) not in rendered
+    assert "private-hidden-session" not in rendered
+    assert "Global hiddenSessionIds overlap with transcripts: 1" in rendered

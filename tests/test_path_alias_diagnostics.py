@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 
 
@@ -158,3 +159,18 @@ def test_help_exposes_observed_path_inputs():
 
     assert "--cwd PATH" in result.stdout
     assert "--resolved-cwd PATH" in result.stdout
+
+
+def test_alias_mode_suppresses_ordinary_mutator_routes(tmp_path):
+    state = tmp_path / "state"
+    shutil.copytree(REPO_ROOT / "fixtures/05-junction-realpath-slug-mismatch/state", state)
+    command = [sys.executable, str(TOOLS / "diagnose.py"), "--state", str(state)]
+    baseline = json.loads(subprocess.check_output(command + ["--json"], text=True))
+    assert any(row.get("next_command") for row in baseline["matched_problems"])
+    command += ["--cwd", ORIGINAL_CWD, "--resolved-cwd", RESOLVED_CWD]
+    result = json.loads(subprocess.check_output(command + ["--json"], text=True))
+    assert result["audit_only"] is True
+    assert result["matched_problems"] == []
+    rendered = subprocess.check_output(command, text=True)
+    assert "--diagnosis-id" not in rendered
+    assert "--apply" not in rendered

@@ -753,7 +753,8 @@ def test_vscode_cli_uses_shared_defaults_and_reports_resolved_paths(
         lambda: "shared-vscode-workspaceStorage",
     )
 
-    assert vscode.main([]) == 0
+    # These synthetic shared defaults do not exist: the inventory is incomplete.
+    assert vscode.main([]) == 2
     rendered = capsys.readouterr().out
 
     assert "Claude sessions-index path: shared-claude-projects" in rendered

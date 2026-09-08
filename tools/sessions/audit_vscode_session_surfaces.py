@@ -75,12 +75,15 @@ def _scan_projects(projects_dir, state, max_directory_entries, max_slugs,
     transcript_digests = set()
     transcripts_scanned = 0
     transcript_cap_recorded = False
-    if expected_path_kind(
+    projects_kind = expected_path_kind(
         projects_dir,
         state,
         expected="directory",
         subject_namespace="projects-root",
-    ) != "directory":
+    )
+    if projects_kind != "directory":
+        if projects_kind == "absent":
+            state.error("projects_root_absent", opaque_id("projects-root", projects_dir))
         return (
             transcript_slugs,
             index_count,

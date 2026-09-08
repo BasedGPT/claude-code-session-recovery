@@ -278,3 +278,22 @@ def test_human_output_does_not_expose_global_database_path_or_ids(tmp_path, caps
     assert str(global_db) not in rendered
     assert "private-hidden-session" not in rendered
     assert "Global hiddenSessionIds overlap with transcripts: 1" in rendered
+
+
+def test_absent_transcript_root_cannot_prove_no_hidden_overlap(tmp_path):
+    projects, workspace, global_db = _audit_roots(
+        tmp_path, {"hiddenSessionIds": ["private-hidden-session"]},
+    )
+    missing = tmp_path / "unavailable-project-root"
+    result = audit.audit_surfaces(
+        str(missing), str(workspace), global_state_db=str(global_db),
+    )
+    hidden = result["global_state_vscdb"]["hidden_session_ids"]
+    assert result["status"] == "partial"
+    assert hidden["conclusive"] is False
+    assert hidden["transcript_overlap_count"] is None
+    assert hidden["listing_interpretation"] is None
+    assert audit.main([
+        "--projects-dir", str(missing), "--workspace-dir", str(workspace),
+        "--global-state-db", str(global_db), "--json",
+    ]) == 2

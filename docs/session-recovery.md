@@ -195,7 +195,10 @@ python tools/diagnose.py --cwd "d:\CustomTools\dev\claude" --resolved-cwd "C:\D-
 
 `--cwd` is the writer or metadata path. `--resolved-cwd` is the reader path
 observed in the VS Code log. The diagnostic compares the two literal slug
-forms and counts direct `.jsonl` files in each matching `~/.claude/projects/`
+forms in a separate audit-only mode; ordinary diagnosis and repair routing do
+not run when these flags are supplied. Without these flags, the existing
+diagnostic workflow is unchanged. The audit
+counts direct `.jsonl` files in each matching `~/.claude/projects/`
 directory. A result such as `observed_slug_mismatch_candidate` means files are
 present under the original slug and absent from the resolved slug. It is a
 candidate path-alias observation, not proof that both strings identify the same

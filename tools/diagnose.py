@@ -388,8 +388,45 @@ def _suppress_ambiguous_synthesis_routes(matches, snapshot):
 _SEP = "-" * 60
 
 
+def _format_path_alias(path_alias):
+    lines = []
+    lines.append("PATH ALIAS OBSERVATION:")
+    lines.append(f"  Status      : {path_alias['status']}")
+    if path_alias.get("path_form_classification"):
+        lines.append(
+            f"  Path forms  : {path_alias['path_form_classification']}"
+        )
+    original = path_alias.get("original", {})
+    resolved = path_alias.get("resolved", {})
+    if original.get("cwd"):
+        lines.append(f"  Original cwd: {_shell_display_path(original['cwd'])}")
+        lines.append(
+            "  Original slug: {} ({} JSONL file(s), scan={})".format(
+                original.get("slug"),
+                original.get("jsonl_count", 0),
+                original.get("scan_status", "unknown"),
+            )
+        )
+    if resolved.get("cwd"):
+        lines.append(f"  Resolved cwd: {_shell_display_path(resolved['cwd'])}")
+        lines.append(
+            "  Resolved slug: {} ({} JSONL file(s), scan={})".format(
+                resolved.get("slug"),
+                resolved.get("jsonl_count", 0),
+                resolved.get("scan_status", "unknown"),
+            )
+        )
+    if path_alias.get("message"):
+        lines.append(f"  Finding     : {path_alias['message']}")
+    lines.append("  Physical identity: not verified from these path strings.")
+    lines.append("  No repair, move, rewrite, or rebind is selected by this observation.")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None,
-                  vscode_dropped=0, vscode_db_count=0, path_alias=None):
+                  vscode_dropped=0, vscode_db_count=0):
     lines = [
         "DIAGNOSE -- Claude Code Desktop Session Recovery Tools",
         _SEP,
@@ -483,39 +520,6 @@ def _format_human(diagnosis_id, snapshot, matches, schema_ok, repo_root=None,
         lines.append("    A: Open VS Code via the UNC path instead of the drive letter.")
         lines.append("    B: Rename ~/.claude/projects/<drive-slug>/ to the UNC-encoded slug.")
         lines.append("       See README.md for step-by-step instructions.")
-        lines.append("")
-
-    if path_alias is not None:
-        lines.append("PATH ALIAS OBSERVATION:")
-        lines.append(f"  Status      : {path_alias['status']}")
-        if path_alias.get("path_form_classification"):
-            lines.append(
-                f"  Path forms  : {path_alias['path_form_classification']}"
-            )
-        original = path_alias.get("original", {})
-        resolved = path_alias.get("resolved", {})
-        if original.get("cwd"):
-            lines.append(f"  Original cwd: {_shell_display_path(original['cwd'])}")
-            lines.append(
-                "  Original slug: {} ({} JSONL file(s), scan={})".format(
-                    original.get("slug"),
-                    original.get("jsonl_count", 0),
-                    original.get("scan_status", "unknown"),
-                )
-            )
-        if resolved.get("cwd"):
-            lines.append(f"  Resolved cwd: {_shell_display_path(resolved['cwd'])}")
-            lines.append(
-                "  Resolved slug: {} ({} JSONL file(s), scan={})".format(
-                    resolved.get("slug"),
-                    resolved.get("jsonl_count", 0),
-                    resolved.get("scan_status", "unknown"),
-                )
-            )
-        if path_alias.get("message"):
-            lines.append(f"  Finding     : {path_alias['message']}")
-        lines.append("  Physical identity: not verified from these path strings.")
-        lines.append("  No repair, move, rewrite, or rebind is selected by this observation.")
         lines.append("")
 
     if vscode_dropped > 0:
@@ -639,6 +643,21 @@ def main():
     else:
         appdata_claude_dir, projects_dir = default_claude_paths()
 
+    # Explicit path observations are a separate audit, not authority for a repair.
+    if args.path_alias_cwd or args.path_alias_resolved_cwd:
+        path_alias = build_path_alias_diagnostic(
+            projects_dir, args.path_alias_cwd, args.path_alias_resolved_cwd,
+        )
+        if args.json_output:
+            print(json.dumps({
+                "audit_only": True,
+                "matched_problems": [],
+                "path_alias_diagnostic": _redact_snapshot(path_alias),
+            }, indent=2))
+        else:
+            print(_format_path_alias(path_alias))
+        return
+
     snapshot = build_snapshot(appdata_claude_dir, projects_dir, fixture_mode=args.state is not None)
     diagnosis_id = make_diagnosis_id(snapshot)
 
@@ -658,14 +677,6 @@ def main():
         if schema_ok else []
     )
     matches = _suppress_ambiguous_synthesis_routes(matches, snapshot)
-
-    path_alias = None
-    if args.path_alias_cwd or args.path_alias_resolved_cwd:
-        path_alias = build_path_alias_diagnostic(
-            projects_dir,
-            args.path_alias_cwd,
-            args.path_alias_resolved_cwd,
-        )
 
     # VS Code session cache check — live mode only; skipped in fixture/json mode
     # so golden outputs stay deterministic.
@@ -703,14 +714,11 @@ def main():
             "schema_mismatch": not schema_ok,
             "snapshot": _redact_snapshot(snapshot),
         }
-        if path_alias is not None:
-            output["path_alias_diagnostic"] = _redact_snapshot(path_alias)
         print(json.dumps(output, indent=2))
     else:
         print(_format_human(
             diagnosis_id, snapshot, matches, schema_ok, repo_root,
             vscode_dropped=vscode_dropped, vscode_db_count=vscode_db_count,
-            path_alias=path_alias,
         ))
 
 

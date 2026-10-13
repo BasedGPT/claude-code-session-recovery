@@ -111,3 +111,17 @@ Transcript age, branch age, lack of recent writes, and zero commits ahead do
 not establish that a session is dead. Use the toolkit's current diagnostic and
 worktree-inspection output; ambiguous liveness means skip. An explicitly named
 session still requires the repair safety gates above.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five canonical triage labels in `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single-context layout. See `docs/agents/domain.md`.
